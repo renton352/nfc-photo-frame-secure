@@ -24,6 +24,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const sig = createHmac('sha256', secret).update(payload).digest('base64url');
   const sid = `${payload}.${sig}`;
 
-  setCookie(res, 'sid', sid, 60 * 60 * 24 * 30); // 30 days
+  // メインのセッション（30日）
+  setCookie(res, 'sid', sid, 60 * 60 * 24 * 30);
+  // ★追加：直後アクセス専用（1分）
+  setCookie(res, 'fresh', '1', 60);
+
   res.status(200).json({ ok: true });
 }
