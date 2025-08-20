@@ -12,13 +12,13 @@ function isStandalone() {
 export default function Setup() {
   const url = new URL(window.location.href);
   const char = url.searchParams.get('char') || 'alice';
-  const tag  = url.searchParams.get('tag');
+  const tag  = url.searchParams.get('tag') || '';
 
   const [ready, setReady] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const verify = React.useCallback(async () => {
-    if (!tag) {                   // ← タグが無ければ認証しない＆ボタン無効
+    if (!tag) {
       setError('NFCタグからアクセスしてください（URLに tag=... が必要です）');
       setReady(false);
       return;
@@ -31,7 +31,7 @@ export default function Setup() {
         cache: 'no-store'
       });
       if (!res.ok) throw new Error('verify failed');
-      await new Promise(r => setTimeout(r, 120)); // Cookie反映のちょい待ち
+      await new Promise(r => setTimeout(r, 120)); // Cookie反映の微待ち
       setReady(true);
     } catch {
       setError('認証に失敗しました。NFCタグをもう一度タッチしてください。');
@@ -57,9 +57,8 @@ export default function Setup() {
   const toFrame = async () => {
     if (!ready) { await verify(); }
     if (!ready) return;
-    // ← tag を引き継いで /frame へ（失敗して戻す時のためにも持っておく）
     const q = new URLSearchParams({ char, from: 'setup' });
-    if (tag) q.set('tag', tag);
+    if (tag) q.set('tag', tag); // ← tag を必ず引き継ぐ
     location.href = `/frame?${q.toString()}`;
   };
 
@@ -78,11 +77,12 @@ export default function Setup() {
           <div className="text-sm font-semibold text-slate-200">まずはブラウザで試す</div>
           <button
             onClick={toFrame}
-            disabled={!ready}
-            className={`w-full py-3 rounded-xl text-lg font-bold ${ready ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-emerald-500/50 cursor-not-allowed'}`}
+            disabled={!ready || !tag}
+            className={`w-full py-3 rounded-xl text-lg font-bold ${ready && tag ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-emerald-500/50 cursor-not-allowed'}`}
           >
             {ready ? 'キャラフレーム起動' : '認証中…'}
           </button>
+          {!tag && <p className="text-amber-300 text-sm mt-2">NFCタグからアクセスしてください（tag が必要です）。</p>}
           {error && <p className="text-red-300 text-sm mt-2">{error}</p>}
         </div>
 
