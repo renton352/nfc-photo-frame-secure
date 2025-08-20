@@ -13,6 +13,7 @@ export default function Setup() {
   const url = new URL(window.location.href);
   const char = url.searchParams.get('char') || 'alice';
   const tag  = url.searchParams.get('tag') || '';
+  const expired = url.searchParams.get('expired') === '1';
 
   const [ready, setReady] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -31,7 +32,8 @@ export default function Setup() {
         cache: 'no-store'
       });
       if (!res.ok) throw new Error('verify failed');
-      await new Promise(r => setTimeout(r, 120)); // Cookie反映の微待ち
+      // Cookie反映のためにほんの少し待機
+      await new Promise(r => setTimeout(r, 120));
       setReady(true);
     } catch {
       setError('認証に失敗しました。NFCタグをもう一度タッチしてください。');
@@ -58,7 +60,7 @@ export default function Setup() {
     if (!ready) { await verify(); }
     if (!ready) return;
     const q = new URLSearchParams({ char, from: 'setup' });
-    if (tag) q.set('tag', tag); // ← tag を必ず引き継ぐ
+    if (tag) q.set('tag', tag); // ← tag を引き継ぐ
     location.href = `/frame?${q.toString()}`;
   };
 
@@ -67,6 +69,12 @@ export default function Setup() {
       <div className="max-w-md w-full space-y-6">
         <h1 className="text-2xl font-bold">初期設定（1回だけ）</h1>
         <p className="text-slate-300">PWAにすると次回からアイコンをタップするだけでフレームが即起動します。</p>
+
+        {expired && (
+          <div className="bg-amber-500/20 border border-amber-400 text-amber-200 rounded-xl p-3 text-sm">
+            有効時間が過ぎました。NFCタグをもう一度タッチしてから起動してください。
+          </div>
+        )}
 
         <div className="bg-white/5 rounded-xl p-4 space-y-3">
           <div className="text-sm font-semibold text-slate-200">PWA化の手順</div>

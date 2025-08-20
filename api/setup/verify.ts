@@ -34,12 +34,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const secret = process.env.SESSION_SECRET || 'dev-secret';
   const nonce = randomBytes(8).toString('hex');
-  const issued = Date.now().toString(36); // 発行時刻を埋め込む
+  const issued = Date.now().toString(36); // 発行時刻（base36）
   const payload = `${tag}.${issued}.${nonce}`;
   const sig = createHmac('sha256', secret).update(payload).digest('base64url');
   const sid = `${payload}.${sig}`;
 
-  // セッションは30日有効（クッキーはこれ1つだけ）
+  // sid（30日）
   setCookie(res, 'sid', sid, 60 * 60 * 24 * 30);
 
   res.status(200).json({ ok: true });

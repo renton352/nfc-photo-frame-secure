@@ -10,30 +10,37 @@ export default function AuthGate({ children }:{children:React.ReactNode}) {
     fetch(`/api/auth/check${needFresh ? '?fresh=1' : ''}`, {
       credentials: 'include',
       cache: 'no-store'
-    }).then(async (r) => {
-      if (r.ok) {
-        setOk(true);
-      } else {
-        let apiTag: string | undefined;
-        try {
-          const j = await r.json();
-          if (j?.tag) apiTag = String(j.tag);
-        } catch {}
-        const u = new URL('/setup', location.origin);
-        const char = cur.searchParams.get('char') || undefined;
-        const tag  = cur.searchParams.get('tag') || apiTag || undefined; // ← 必ず tag を引き継ぐ
-        if (char) u.searchParams.set('char', char);
-        if (tag)  u.searchParams.set('tag', tag);
-        location.replace(u.toString());
-        setOk(false);
-      }
-    }).catch(() => setOk(false));
+    })
+      .then(async (r) => {
+        if (r.ok) {
+          setOk(true);
+          // URLをクリーンに（共有・PWA用）
+          if (needFresh) {
+            const clean = new URL(location.href);
+            clean.searchParams.delete('from');
+            clean.searchParams.delete('tag');
+            history.replaceState(null, '', clean.toString());
+          }
+        } else {
+          let apiTag: string | undefined;
+          let reason: string | undefined;
+          try {
+            const j = await r.json();
+            if (j?.tag) apiTag = String(j.tag);
+            if (j?.reason) reason = String(j.reason);
+          } catch {}
 
-    // 認証後は URL をクリーンに
-    if (needFresh) {
-      cur.searchParams.delete('from');
-      history.replaceState(null, '', cur.toString());
-    }
+          const u = new URL('/setup', location.origin);
+          const char = cur.searchParams.get('char') || undefined;
+          const tag  = cur.searchParams.get('tag') || apiTag || undefined;
+          if (char) u.searchParams.set('char', char);
+          if (tag)  u.searchParams.set('tag', tag);
+          if (reason === 'expired') u.searchParams.set('expired', '1'); // メッセージ用
+          location.replace(u.toString());
+          setOk(false);
+        }
+      })
+      .catch(() => setOk(false));
   }, []);
 
   if (ok === null) {
