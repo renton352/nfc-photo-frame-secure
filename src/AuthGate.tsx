@@ -7,11 +7,14 @@ export default function AuthGate({ children }:{children:React.ReactNode}) {
     const url = new URL(location.href);
     const needFresh = url.searchParams.get('from') === 'setup';
 
-    fetch(`/api/auth/check${needFresh ? '?fresh=1' : ''}`)
+    fetch(`/api/auth/check${needFresh ? '?fresh=1' : ''}`, {
+      credentials: 'include',
+      cache: 'no-store'
+    })
       .then(r => setOk(r.ok))
       .catch(() => setOk(false));
 
-    // 認証後に from=setup をURLから削除（ブクマやPWAアイコン用に綺麗に）
+    // 認証後、URLをクリーンに（ブクマ/PWA用）
     if (needFresh) {
       url.searchParams.delete('from');
       history.replaceState(null, '', url.toString());

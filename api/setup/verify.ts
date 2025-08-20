@@ -23,6 +23,7 @@ function setCookie(res: VercelResponse, name: string, value: string, maxAgeSec: 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
 
+  // 念のためキャッシュ禁止
   res.setHeader('Cache-Control', 'no-store');
 
   const tag = (req.query.tag || (req.body as any)?.tag) as string | undefined;
@@ -33,14 +34,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const secret = process.env.SESSION_SECRET || 'dev-secret';
   const nonce = randomBytes(8).toString('hex');
-  const issued = Date.now().toString(36);
+  const issued = Date.now().toString(36); // ここが「発行時刻」
   const payload = `${tag}.${issued}.${nonce}`;
   const sig = createHmac('sha256', secret).update(payload).digest('base64url');
   const sid = `${payload}.${sig}`;
 
-  // 両方とも確実にセット（上書きしない）
-  setCookie(res, 'sid', sid, 60 * 60 * 24 * 30); // 30日
-  setCookie(res, 'fresh', '1', 60);              // 1分
+  // メインのセッション（30日）
+  setCookie(res, 'sid', sid, 60 * 60 * 24 * 30);
 
   res.status(200).json({ ok: true });
 }

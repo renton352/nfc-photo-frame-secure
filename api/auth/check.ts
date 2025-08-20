@@ -14,15 +14,20 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   const secret = process.env.SESSION_SECRET || 'dev-secret';
   const parts = sid.split('.');
   if (parts.length < 4) return res.status(401).json({ ok: false });
-  const [tag, issued, nonce, sig] = [parts[0], parts[1], parts[2], parts[3]];
-  const expected = createHmac('sha256', secret).update(`${tag}.${issued}.${nonce}`).digest('base64url');
+
+  const [tag, issuedBase36, nonce, sig] = [parts[0], parts[1], parts[2], parts[3]];
+  const expected = createHmac('sha256', secret).update(`${tag}.${issuedBase36}.${nonce}`).digest('base64url');
   if (sig !== expected) return res.status(401).json({ ok: false });
 
-  // ★追加：?fresh=1 のときだけ、1分クッキーを要求
+  // ここで「直後1分以内」判定（?fresh=1 が付いている場合のみ）
   const needFresh = req.query.fresh === '1';
   if (needFresh) {
-    const fresh = parseCookie(req, 'fresh');
-    if (!fresh) return res.status(401).json({ ok: false, reason: 'expired' });
+    const issuedMs = parseInt(issuedBase36, 36);
+    if (!Number.isFinite(issuedMs)) return res.status(401).json({ ok: false });
+    const ageMs = Date.now() - issuedMs;
+    if (ageMs > 60_000) {
+      return res.status(401).json({ ok: false, reason: 'expired' });
+    }
   }
 
   return res.status(200).json({ ok: true });
