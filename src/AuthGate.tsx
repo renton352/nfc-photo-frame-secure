@@ -21,15 +21,13 @@ export default function AuthGate({ children }:{children:React.ReactNode}) {
     }
   }, []);
 
-  if (ok === null) {
-    return <div className="min-h-screen grid place-items-center text-white bg-slate-900">確認中...</div>;
-  }
   if (!ok) {
+    const cur = new URL(location.href);
     const u = new URL('/setup', location.origin);
-    const char = new URL(location.href).searchParams.get('char');
+    const char = cur.searchParams.get('char');
+    const tag  = cur.searchParams.get('tag'); // ← 追加
     if (char) u.searchParams.set('char', char);
+    if (tag)  u.searchParams.set('tag', tag); // ← 追加
     location.replace(u.toString());
     return null;
   }
-  return <>{children}</>;
-}

@@ -18,7 +18,11 @@ export default function Setup() {
   const [error, setError] = React.useState<string | null>(null);
 
   const verify = React.useCallback(async () => {
-    if (!tag) { setReady(true); return; }
+    if (!tag) {                   // ← タグが無ければ認証しない＆ボタン無効
+      setError('NFCタグからアクセスしてください（URLに tag=... が必要です）');
+      setReady(false);
+      return;
+    }
     try {
       setError(null);
       const res = await fetch(`/api/setup/verify?tag=${encodeURIComponent(tag)}`, {
@@ -27,8 +31,7 @@ export default function Setup() {
         cache: 'no-store'
       });
       if (!res.ok) throw new Error('verify failed');
-      // Cookie反映を安定させるため、ほんの少し待つ
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 120)); // Cookie反映のちょい待ち
       setReady(true);
     } catch {
       setError('認証に失敗しました。NFCタグをもう一度タッチしてください。');
@@ -46,15 +49,18 @@ export default function Setup() {
     </ol>
   ) : (
     <ol className="list-decimal pl-6 space-y-2">
-      <li>ブラウザのメニューから <b>ホーム画面に追加</b>（またはインストール）</li>
+      <li>メニューから <b>ホーム画面に追加</b>（またはインストール）</li>
       <li>追加後は <b>アイコン</b> から起動</li>
     </ol>
   ), []);
 
   const toFrame = async () => {
     if (!ready) { await verify(); }
-    if (!ready) return; // それでも未準備なら中断
-    location.href = `/frame?char=${encodeURIComponent(char)}&from=setup`;
+    if (!ready) return;
+    // ← tag を引き継いで /frame へ（失敗して戻す時のためにも持っておく）
+    const q = new URLSearchParams({ char, from: 'setup' });
+    if (tag) q.set('tag', tag);
+    location.href = `/frame?${q.toString()}`;
   };
 
   return (
