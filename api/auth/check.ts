@@ -19,15 +19,13 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   const expected = createHmac('sha256', secret).update(`${tag}.${issuedBase36}.${nonce}`).digest('base64url');
   if (sig !== expected) return res.status(401).json({ ok: false });
 
-  // ここで「直後1分以内」判定（?fresh=1 が付いている場合のみ）
+  // /frame?from=setup の時だけ、発行から1分以内を要求
   const needFresh = req.query.fresh === '1';
   if (needFresh) {
     const issuedMs = parseInt(issuedBase36, 36);
     if (!Number.isFinite(issuedMs)) return res.status(401).json({ ok: false });
     const ageMs = Date.now() - issuedMs;
-    if (ageMs > 60_000) {
-      return res.status(401).json({ ok: false, reason: 'expired' });
-    }
+    if (ageMs > 60_000) return res.status(401).json({ ok: false, reason: 'expired' });
   }
 
   return res.status(200).json({ ok: true });

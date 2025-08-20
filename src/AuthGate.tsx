@@ -14,7 +14,7 @@ export default function AuthGate({ children }:{children:React.ReactNode}) {
       .then(r => setOk(r.ok))
       .catch(() => setOk(false));
 
-    // 認証後、URLをクリーンに（ブクマ/PWA用）
+    // 認証後に from=setup をURLから除去（ブクマ/PWA用に綺麗に）
     if (needFresh) {
       url.searchParams.delete('from');
       history.replaceState(null, '', url.toString());
