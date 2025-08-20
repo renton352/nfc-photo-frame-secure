@@ -14,15 +14,29 @@ export default function Setup() {
   const char = url.searchParams.get('char') || 'alice';
   const tag  = url.searchParams.get('tag');
 
-  async function verify() {
-    if (!tag) return;
+  const [ready, setReady] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const verify = React.useCallback(async () => {
+    if (!tag) { setReady(true); return; }
     try {
-      await fetch(`/api/setup/verify?tag=${encodeURIComponent(tag)}`, { method: 'POST' });
+      setError(null);
+      const res = await fetch(`/api/setup/verify?tag=${encodeURIComponent(tag)}`, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store'
+      });
+      if (!res.ok) throw new Error('verify failed');
+      // Cookie反映を安定させるため、ほんの少し待つ
+      await new Promise(r => setTimeout(r, 150));
+      setReady(true);
     } catch {
-      alert('認証に失敗しました。NFCタグをもう一度タッチしてください。');
+      setError('認証に失敗しました。NFCタグをもう一度タッチしてください。');
+      setReady(false);
     }
-  }
-  React.useEffect(() => { verify(); }, []);
+  }, [tag]);
+
+  React.useEffect(() => { verify(); }, [verify]);
 
   const guide = useMemo(() => isiOS() ? (
     <ol className="list-decimal pl-6 space-y-2">
@@ -37,7 +51,11 @@ export default function Setup() {
     </ol>
   ), []);
 
-  const toFrame = () => location.href = `/frame?char=${encodeURIComponent(char)}&from=setup`;
+  const toFrame = async () => {
+    if (!ready) { await verify(); }
+    if (!ready) return; // それでも未準備なら中断
+    location.href = `/frame?char=${encodeURIComponent(char)}&from=setup`;
+  };
 
   return (
     <div className="min-h-screen bg-slate-900 text-white grid place-items-center p-6">
@@ -52,9 +70,14 @@ export default function Setup() {
 
         <div className="bg-white/5 rounded-xl p-4 space-y-3">
           <div className="text-sm font-semibold text-slate-200">まずはブラウザで試す</div>
-          <button onClick={toFrame} className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-lg font-bold">
-            キャラフレーム起動
+          <button
+            onClick={toFrame}
+            disabled={!ready}
+            className={`w-full py-3 rounded-xl text-lg font-bold ${ready ? 'bg-emerald-500 hover:bg-emerald-400' : 'bg-emerald-500/50 cursor-not-allowed'}`}
+          >
+            {ready ? 'キャラフレーム起動' : '認証中…'}
           </button>
+          {error && <p className="text-red-300 text-sm mt-2">{error}</p>}
         </div>
 
         <div className="text-xs text-slate-400">
