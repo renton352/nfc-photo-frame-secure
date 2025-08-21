@@ -22,7 +22,7 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     .digest('base64url');
   if (sig !== expected) return res.status(401).json({ ok: false });
 
-  // /frame?from=setup の初回だけ“発行1分以内”を要求
+  // /frame?from=setup の初回だけ “発行1分以内” を要求
   if (req.query.fresh === '1') {
     const issuedMs = parseInt(issuedBase36, 36);
     if (!Number.isFinite(issuedMs)) return res.status(401).json({ ok: false });
