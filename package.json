@@ -1,22 +1,8 @@
 {
-  "name": "nfc-photo-frame-secure",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview --port 5173"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@types/react": "^18.2.66",
-    "@types/react-dom": "^18.2.22",
-    "@vitejs/plugin-react": "^4.3.1",
-    "typescript": "^5.4.0",
-    "vite": "^5.4.0"
-  }
+  "version": 2,
+  "cleanUrls": true,
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },   // © API ‚Í‘f’Ê‚µ
+    { "src": "/(.*)", "dest": "/index.html" }    // © ‚»‚êˆÈŠO‚Íí‚É SPA ‚ÌƒGƒ“ƒgƒŠ‚Ö
+  ]
 }
