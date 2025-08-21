@@ -2,17 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
- * App.tsx（manifest不要・命名規則だけで差し替え）— 撮影シーケンス調整版
- * - 入口URLは固定: https://nfc-photo-frame-secure.vercel.app/
- * - NFCの引数: ?ip=<IP名>&cara=<キャラID>
- * - 探すパス（存在すれば自動採用／無ければ内蔵にフォールバック）
- *   Character: /packs/<ip>/characters/<cara>.(png|webp|jpg|jpeg)
- *   Frame PNG: /packs/<ip>/frames/<frameId>_<aspect>.(png|webp)  ← 任意
- *   Voices   : /packs/<ip>/voice/{pre|shutter|post}.(mp3|ogg|wav) ← 任意
- *
- * 撮影手順（要求どおり）：
- * pre 再生 → 終了後カウントダウン → フラッシュ＆撮影＆shutter同時開始 →
- * shutter終了後 post 再生
+ * App.tsx — NFC素材だけローカル保存（IndexedDB）版
+ * - オフライン起動はしない（Service Worker 不要）
+ * - ただし NFC の ?ip / ?cara で参照した「キャラ画像/ボイス/フレームPNG」は IndexedDB に保存
+ *   → 同じ ip/cara に再アクセスした時はローカルから即座に使える
+ * - 既存機能：ドラッグ／ピンチ回転拡大／撮影シーケンス（pre→CD→flash&shot&shutter→post）
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -33,32 +27,49 @@ const builtinFramePNGs  = import.meta.glob("./assets/frames/*.{png,webp}",     {
 export default function App() {
   const params = new URLSearchParams(location.search);
   const ip   = params.get("ip")   ?? "default";
-  const cara = params.get("cara") ?? ""; // 例: alice, bob, clear
+  const cara = params.get("cara") ?? "";
 
-  // 画面/カメラの初期設定（任意の追加クエリも可）
+  // 画面/カメラの初期設定
   const urlCamera = params.get("camera") === "back" ? "environment" : "user";
   const urlAspect = (params.get("aspect") as Aspect | null) ?? "3:4";
   const urlCd     = Number(params.get("cd") ?? 3);
   const urlGuide  = params.get("guide") === "1";
 
-  // キャラURL（規則で探す → なければ内蔵）
+  // ==== キャラ画像（IndexedDBキャッシュ対応） ====
   const [charUrl, setCharUrl] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const cand = await pickExisting([
+      // 1) IndexedDB から取得（あれば Blob→ObjectURL）
+      const cacheKey = `char/${ip}/${cara}`;
+      const cached = await idbGetBlob(cacheKey);
+      if (cached && !cancelled) {
+        setCharUrl(URL.createObjectURL(cached));
+        return;
+      }
+      // 2) ネットからフェッチ→IndexedDBへ保存→ObjectURL
+      const net = await fetchFirstBlob([
         `/packs/${ip}/characters/${cara}.png`,
         `/packs/${ip}/characters/${cara}.webp`,
         `/packs/${ip}/characters/${cara}.jpg`,
         `/packs/${ip}/characters/${cara}.jpeg`,
-      ], "image");
-      if (!cancelled && cand) { setCharUrl(cand); return; }
-      // フォールバック（内蔵の最初）
-      const firstBuiltin = Object.values(builtinCharacters)[0] ?? "";
-      if (!cancelled) setCharUrl(firstBuiltin);
+      ]);
+      if (net && !cancelled) {
+        await idbPutBlob(cacheKey, net);
+        setCharUrl(URL.createObjectURL(net));
+        return;
+      }
+      // 3) フォールバック（内蔵）
+      const fallback = Object.values(builtinCharacters)[0] ?? "";
+      if (!cancelled) setCharUrl(fallback);
     })();
     return () => { cancelled = true; };
   }, [ip, cara]);
+
+  // ObjectURLの後始末（メモリ漏れ防止）
+  useEffect(() => {
+    return () => { if (charUrl.startsWith("blob:")) URL.revokeObjectURL(charUrl); };
+  }, [charUrl]);
 
   // フレーム（プログラム描画3種）
   const [activeFrame, setActiveFrame] = useState<FrameKind>(PROGRAM_FRAMES[0].id);
@@ -112,7 +123,6 @@ export default function App() {
       setReady(true);
     }
   };
-
   useEffect(() => { startStream(facing); return () => stopStream(); }, [facing]);
 
   // ステージサイズ
@@ -148,12 +158,8 @@ export default function App() {
 
   const onPointerMove = (e: React.PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return;
-
-    // 1) 前回座標（prev）を先に読む
     const prev = pointers.current.get(e.pointerId)!;
     const curr = { x: e.clientX, y: e.clientY };
-
-    // 2) 現在の全ポインタ配列（動いている指だけ curr に置き換えて計算）
     const entries = Array.from(pointers.current.entries());
     const ps = entries.map(([id, pos]) => (id === e.pointerId ? curr : pos));
 
@@ -161,22 +167,17 @@ export default function App() {
       const d = dist(ps[0], ps[1]);
       const a = angle(ps[0], ps[1]);
       const g0 = gestureStart.current;
-
       setScale(clamp(g0.scale * (d / g0.d), 0.3, 4));
       let delta = a - g0.a; delta = ((delta + 180) % 360) - 180;
       setRot(g0.rot + delta);
-
       const midNow   = midpoint(ps[0], ps[1]);
       const midStart = { x: g0.cx, y: g0.cy };
       setCx(g0.cx + (midNow.x - midStart.x));
       setCy(g0.cy + (midNow.y - midStart.y));
     } else if (pointers.current.size === 1 && !isGesturing) {
-      // 単指ドラッグ
       setCx(v => v + (curr.x - prev.x));
       setCy(v => v + (curr.y - prev.y));
     }
-
-    // 3) 最後に現在座標で保存
     pointers.current.set(e.pointerId, curr);
   };
 
@@ -200,7 +201,7 @@ export default function App() {
 
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ==== 音声ユーティリティ ====
+  // ==== 音声（IndexedDBキャッシュ対応） ====
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -213,7 +214,6 @@ export default function App() {
     } catch {}
   };
 
-  // 終了(onended)まで待つ版
   const playAndWait = async (url?: string) => {
     if (!url) return;
     await new Promise<void>((resolve) => {
@@ -222,9 +222,7 @@ export default function App() {
         a.onended = () => resolve();
         a.onerror = () => resolve();
         a.play().catch(() => resolve());
-      } catch {
-        resolve();
-      }
+      } catch { resolve(); }
     });
   };
 
@@ -243,13 +241,20 @@ export default function App() {
     });
   };
 
+  // IndexedDB から音声を取り出す（なければネット→保存→ObjectURL、さらに内蔵も候補）
   const pickVoice = async (name: "pre" | "shutter" | "post") => {
-    const cand = await pickExisting([
+    const key = `voice/${ip}/${name}`;
+    const cached = await idbGetBlob(key);
+    if (cached) return URL.createObjectURL(cached);
+    const net = await fetchFirstBlob([
       `/packs/${ip}/voice/${name}.mp3`,
       `/packs/${ip}/voice/${name}.ogg`,
       `/packs/${ip}/voice/${name}.wav`,
-    ], "audio");
-    if (cand) return cand;
+    ]);
+    if (net) {
+      await idbPutBlob(key, net);
+      return URL.createObjectURL(net);
+    }
     // 内蔵から類推
     const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
     return Object.values(builtinVoices).find(u => re.test(u));
@@ -259,11 +264,32 @@ export default function App() {
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
   const [countdown, setCountdown] = useState(0);
 
+  // フレームPNG（プレビュー＆撮影時）も IndexedDB に保存・再利用
+  const getOverlayURL = async (frame: FrameKind, asp: Aspect): Promise<string | null> => {
+    const keyBase = `${frame}_${asp.replace(":","x")}`;
+    // 1) 端末キャッシュ
+    const k = `frame/${ip}/${keyBase}`;
+    const cached = await idbGetBlob(k);
+    if (cached) return URL.createObjectURL(cached);
+    // 2) ネット
+    const net = await fetchFirstBlob([
+      `/packs/${ip}/frames/${keyBase}.png`,
+      `/packs/${ip}/frames/${keyBase}.webp`,
+    ]);
+    if (net) {
+      await idbPutBlob(k, net);
+      return URL.createObjectURL(net);
+    }
+    // 3) 内蔵PNG
+    const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === keyBase)?.[1] ?? null;
+    return builtin;
+  };
+
   const doCapture = async () => {
     if (shooting) return;
     setShooting(true);
     try {
-      // (1) pre を先に再生し、終わるまで待機
+      // (1) pre 再生完了待ち
       let preUrl: string | undefined;
       let shutterUrl: string | undefined;
       let postUrl: string | undefined;
@@ -277,26 +303,25 @@ export default function App() {
       // (2) カウントダウン（1秒刻み）
       for (let i = countdownSec; i >= 1; i--) {
         setCountdown(i);
-	  await playBeepAndWait();   // ← 追加（0.2秒ビープ）
-	  await wait(800);           // 合計ほぼ1秒になるよう調整
+        await wait(1000);
       }
       setCountdown(0);
 
-      // (3) フラッシュ & 撮影 & shutter を同時にスタート
+      // (3) フラッシュ & 撮影 & shutter 同時開始
       setFlash(true);
+      navigator.vibrate?.(60);
       setTimeout(() => setFlash(false), 120);
 
-      // shutterは同時に再生開始し、後で終了待機
       const shutterPromise = sfxOn
         ? (shutterUrl ? playAndWait(shutterUrl) : playBeepAndWait())
         : Promise.resolve();
 
-      // ---- 撮影処理 ----
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext("2d")!;
       const [w, h] = aspect === "1:1" ? [1000, 1000] : aspect === "16:9" ? [1280, 720] : [900, 1200];
       canvas.width = w; canvas.height = h;
 
+      // 背景
       if (!usingPlaceholder && videoRef.current && (videoRef.current as any).videoWidth) {
         const vw = (videoRef.current as any).videoWidth;
         const vh = (videoRef.current as any).videoHeight;
@@ -331,58 +356,33 @@ export default function App() {
         ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH); ctx.restore();
       }
 
-      // フレーム
-      const key = `${activeFrame}_${aspect.replace(":", "x")}`;
-      const overlay = await pickExisting([
-        `/packs/${ip}/frames/${key}.png`,
-        `/packs/${ip}/frames/${key}.webp`,
-      ], "image");
-      if (overlay) {
-        const img = await loadImage(overlay);
+      // フレーム（キャッシュ対応）
+      const overlayUrl = await getOverlayURL(activeFrame, aspect);
+      if (overlayUrl) {
+        const img = await loadImage(overlayUrl);
         ctx.drawImage(img, 0, 0, w, h);
       } else {
-        const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === key)?.[1];
-        if (builtin) {
-          const img = await loadImage(builtin);
-          ctx.drawImage(img, 0, 0, w, h);
-        } else {
-          drawProgramFrame(ctx, activeFrame, w, h);
-        }
+        drawProgramFrame(ctx, activeFrame, w, h);
       }
 
       const dataUrl = canvas.toDataURL("image/png");
       setShots(prev => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
-      // ---- 撮影ここまで ----
 
-      // (4) shutterの終了待ち
+      // (4) shutter完了待ち → (5) post 再生
       await shutterPromise;
-
-      // (5) shutterが終わってから post を再生
-      if (sfxOn && postUrl) {
-        await playAndWait(postUrl);
-      }
+      if (sfxOn && postUrl) await playAndWait(postUrl);
     } finally {
       setShooting(false);
     }
   };
 
-  // プレビュー用フレーム（非同期でロード）
+  // プレビュー用フレーム（キャッシュ対応）
   const [previewOverlay, setPreviewOverlay] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const key = `${activeFrame}_${aspect.replace(":", "x")}`;
-      const cand = await pickExisting([
-        `/packs/${ip}/frames/${key}.png`,
-        `/packs/${ip}/frames/${key}.webp`,
-      ], "image");
-      if (!cancelled) {
-        if (cand) setPreviewOverlay(cand);
-        else {
-          const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === key)?.[1];
-          setPreviewOverlay(builtin ?? null);
-        }
-      }
+      const u = await getOverlayURL(activeFrame, aspect);
+      if (!cancelled) setPreviewOverlay(u);
     })();
     return () => { cancelled = true; };
   }, [ip, activeFrame, aspect]);
@@ -394,8 +394,8 @@ export default function App() {
         <motion.div className="bg-slate-800/60 rounded-2xl p-5 sm:p-6 shadow-xl border border-white/10" initial={{opacity:0,y:12}} animate={{opacity:1,y:0}}>
           <h1 className="text-2xl sm:text-3xl font-bold mb-2">NFC×Web その場でフォトフレーム</h1>
           <p className="text-slate-300 mb-4">
-            固定URL + <span className="font-mono">?ip</span>/<span className="font-mono">?cara</span> のみで素材を切替（manifest不要）<br/>
-            例：<span className="font-mono">?ip=anime1&cara=alice</span>
+            固定URL + <span className="font-mono">?ip</span>/<span className="font-mono">?cara</span> で素材を切替。<br/>
+            参照した素材（キャラ/ボイス/フレームPNG）は端末に保存して再利用します。
           </p>
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
@@ -482,7 +482,7 @@ export default function App() {
               </div>
             )}
 
-            {/* 撮影音に合わせたフラッシュ */}
+            {/* フラッシュ */}
             {flash && (
               <motion.div
                 key="flash"
@@ -553,7 +553,7 @@ function ProgramFrameOverlay({ active }: { active: FrameKind }) {
     return (
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-4 rounded-2xl" style={{ boxShadow: "0 0 12px rgba(0,255,255,0.8), inset 0 0 24px rgba(0,255,255,0.35)" }} />
-        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text-white" style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}>
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text白" style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}>
           Oshi Camera
         </div>
       </div>
@@ -594,16 +594,50 @@ async function loadImage(url:string){
   });
 }
 
-/** 存在する最初のURLを返す。typeが'image'ならImageで確認、'audio'ならfetch HEAD。 */
-async function pickExisting(candidates:string[], type:"image"|"audio"): Promise<string|undefined>{
-  for (const url of candidates){
+// ---- ネットから最初に取れた Blob を返す ----
+async function fetchFirstBlob(urls: string[]): Promise<Blob | undefined> {
+  for (const url of urls) {
     try {
-      if (type==="image"){ await loadImage(url); return url; }
-      else {
-        const res = await fetch(url, { method:"HEAD" });
-        if (res.ok) return url;
-      }
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.ok) return await res.blob();
     } catch {}
   }
   return undefined;
+}
+
+// ---- IndexedDB シンプルラッパ（Blob保存）----
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("oshi-assets", 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGetBlob(key: string): Promise<Blob | undefined> {
+  try {
+    const db = await openDB();
+    return await new Promise((resolve) => {
+      const tx = db.transaction("files", "readonly");
+      const st = tx.objectStore("files");
+      const r = st.get(key);
+      r.onsuccess = () => resolve(r.result as Blob | undefined);
+      r.onerror = () => resolve(undefined);
+    });
+  } catch { return undefined; }
+}
+async function idbPutBlob(key: string, blob: Blob): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction("files", "readwrite");
+      const st = tx.objectStore("files");
+      const r = st.put(blob, key);
+      r.onsuccess = () => resolve();
+      r.onerror   = () => resolve();
+    });
+  } catch {}
 }
