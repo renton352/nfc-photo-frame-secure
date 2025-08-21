@@ -3,10 +3,10 @@
   "routes": [
     { "handle": "filesystem" },
 
-    // ‚±‚ê‚ç‚ÌƒpƒX‚Íí‚É SPA ƒGƒ“ƒgƒŠiindex.htmlj‚Ö
+    // ã“ã‚Œã‚‰ã®ãƒ‘ã‚¹ã¯å¸¸ã« SPA ã‚¨ãƒ³ãƒˆãƒªï¼ˆindex.htmlï¼‰ã¸
     { "src": "/(setup|frame)(?:/.*)?", "dest": "/index.html" },
 
-    // /api/ ‚ğœ‚­‚·‚×‚Ä‚ğ index.html ‚ÉƒtƒH[ƒ‹ƒoƒbƒN
+    // /api/ ã‚’é™¤ãã™ã¹ã¦ã‚’ index.html ã«ãƒ•ã‚©ãƒ¼ãƒ«ãƒãƒƒã‚¯
     { "src": "/(?!api/).*", "dest": "/index.html" }
   ]
 }
