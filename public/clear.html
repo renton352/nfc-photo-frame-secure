@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Clear</title>
+<script>
+(async () => {
+  try { await caches.delete('oshi-profile-v1'); } catch {}
+  try { localStorage.removeItem('last-ip-cara'); } catch {}
+  location.replace('/');
+})();
+</script>
