@@ -1,33 +1,37 @@
-// api/setup/start.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createHmac, randomBytes } from 'crypto';
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { createHmac } from 'crypto'
 
-function setCookie(res: VercelResponse, name: string, value: string, maxAgeSec: number) {
-  const cookie = [`${name}=${value}`, 'Path=/', 'HttpOnly', 'Secure', 'SameSite=Lax', `Max-Age=${maxAgeSec}`].join('; ');
-  const prev = res.getHeader('Set-Cookie');
-  const arr = prev ? (Array.isArray(prev) ? prev : [String(prev)]) : [];
-  arr.push(cookie);
-  res.setHeader('Set-Cookie', arr);
+function bad(res: VercelResponse, code: number, error: string) {
+  return res.status(code).json({ ok: false, error })
 }
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
-  res.setHeader('Cache-Control', 'no-store');
+  if (req.method !== 'GET') return bad(res, 405, 'Method Not Allowed')
 
-  const tag = String((req.query.tag ?? (req.body as any)?.tag ?? '')).trim();
-  if (!tag) return res.status(400).json({ ok: false, error: 'tag required' });
+  const tag = (req.query.tag as string || '').trim()
+  if (!tag) return bad(res, 400, 'tag required')
 
-  const allowed = (process.env.ALLOWED_TAGS || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (!allowed.includes(tag)) return res.status(403).json({ ok: false, error: 'invalid tag' });
+  const allowed = (process.env.ALLOWED_TAGS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
 
-  const secret = process.env.SESSION_SECRET || 'dev-secret';
-  const iat = Date.now();                          // 発行時刻
-  const jti = randomBytes(8).toString('hex');      // 一意ID
-  const payload = `${tag}.${iat}.${jti}`;
-  const sig = createHmac('sha256', secret).update(payload).digest('base64url');
+  if (allowed.length && !allowed.includes(tag)) {
+    return bad(res, 403, 'tag not allowed')
+  }
 
-  // snonce = tag.iat.jti.sig （60秒）
-  setCookie(res, 'snonce', `${payload}.${sig}`, 60);
+  const secret = process.env.SESSION_SECRET || 'dev-secret'
+  const issued = Date.now().toString(36)
+  const nonce = Math.random().toString(36).slice(2, 8)
+  const sig = createHmac('sha256', secret)
+    .update(`${tag}:${issued}:${nonce}`)
+    .digest('base64url')
 
-  return res.status(200).json({ ok: true, iat });
+  const sid = `${tag}.${issued}.${nonce}.${sig}`
+
+  res.setHeader('Set-Cookie',
+    `sid=${sid}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`
+  )
+
+  return res.status(200).json({ ok: true })
 }

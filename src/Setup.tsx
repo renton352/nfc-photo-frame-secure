@@ -1,51 +1,70 @@
-// src/Setup.tsx ï¼ˆè©²å½“éƒ¨åˆ†ã®å·®ã—æ›¿ãˆï¼‰
-import React, { useMemo } from 'react';
+import React from 'react'
+
+function q<T extends string>(k: T) {
+  return new URL(location.href).searchParams.get(k) || ''
+}
 
 export default function Setup() {
-  const url = new URL(location.href);
-  const char = url.searchParams.get('char') || 'alice';
-  const tag  = url.searchParams.get('tag') || '';
+  const tag = q('tag')
+  const char = q('char')
 
-  const [ready, setReady] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const [state, setState] = React.useState<'idle' | 'working' | 'done' | 'error'>('idle')
+  const [msg, setMsg] = React.useState<string>('')
 
-  const start = React.useCallback(async () => {
+  const start = async () => {
     if (!tag) {
-      setError('NFCã‚¿ã‚°ã‹ã‚‰ã‚¢ã‚¯ã‚»ã‚¹ã—ã¦ãã ã•ã„ï¼ˆURLã« tag=... ãŒå¿…è¦ã§ã™ï¼‰');
-      setReady(false);
-      return;
+      setMsg('ƒ^ƒOî•ñ‚ª‚ ‚è‚Ü‚¹‚ñi?tag= ‚ª•K—vj')
+      setState('error')
+      return
     }
-    setError(null);
-    const r = await fetch(`/api/setup/start?tag=${encodeURIComponent(tag)}`, {
-      method: 'POST', credentials: 'include', cache: 'no-store'
-    });
-    if (!r.ok) {
-      setError('é–‹å§‹ã«å¤±æ•—ã—ã¾ã—ãŸã€‚NFCã‚¿ã‚°ã‚’ã‚‚ã†ä¸€åº¦ã‚¿ãƒƒãƒã—ã¦ãã ã•ã„ã€‚');
-      setReady(false);
-      return;
+    setState('working')
+    setMsg('Šm”F’†...')
+
+    try {
+      const r = await fetch(`/api/setup/start?tag=${encodeURIComponent(tag)}`, { method: 'GET' })
+      const j = await r.json()
+      if (!j.ok) throw new Error(j.error || 'setup failed')
+
+      // ‰‰ñ‚Í 1 •ª§ŒÀ‚ğ‰Û‚·‚½‚ßA?from=setup&fresh=1 ‚ğ•t—^‚µ‚Ä‘JˆÚ
+      const to = new URL(location.origin + `/frame?char=${encodeURIComponent(char)}&from=setup&fresh=1`)
+      history.pushState({}, '', to)
+      location.reload()
+    } catch (e: any) {
+      setState('error')
+      setMsg(e?.message || '’ÊM‚É¸”s‚µ‚Ü‚µ‚½')
     }
-    setReady(true); // snonce ãŒå…¥ã£ãŸã®ã§60ç§’ã ã‘æœ‰åŠ¹
-  }, [tag]);
+  }
 
-  React.useEffect(() => { start(); }, [start]);
+  return (
+    <div style={{ maxWidth: 520, margin: '48px auto', color: '#e6e6e6', fontFamily: 'system-ui, sans-serif' }}>
+      <h1>‰Šúİ’èi1‰ñ‚¾‚¯j</h1>
+      <p>PWA ‰»‚ÍŒã‚ÅB‚Ü‚¸‚Í NFC ƒ^ƒO‚©‚ç‹N“®‚Å‚«‚é‚©‚ğŠm”F‚µ‚Ü‚·B</p>
 
-  const toFrame = async () => {
-    if (!ready) return;
-    const r = await fetch(`/api/setup/verify?tag=${encodeURIComponent(tag)}`, {
-      method: 'POST', credentials: 'include', cache: 'no-store'
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(()=>({}));
-      setError(j?.reason === 'expired'
-        ? 'æœ‰åŠ¹æ™‚é–“ãŒéãã¾ã—ãŸã€‚NFCã‚¿ã‚°ã‚’ã‚‚ã†ä¸€åº¦ã‚¿ãƒƒãƒã—ã¦ãã ã•ã„ã€‚'
-        : 'èªè¨¼ã«å¤±æ•—ã—ã¾ã—ãŸã€‚NFCã‚¿ã‚°ã‚’ã‚‚ã†ä¸€åº¦ã‚¿ãƒƒãƒã—ã¦ãã ã•ã„ã€‚'
-      );
-      setReady(false);
-      return;
-    }
-    const q = new URLSearchParams({ char, from: 'setup', tag });
-    location.href = `/frame?${q.toString()}`;
-  };
+      <div style={{ background: '#192132', padding: 16, borderRadius: 8, marginTop: 16 }}>
+        <ol>
+          <li>ƒuƒ‰ƒEƒU‚Å‚±‚Ìƒy[ƒW‚ğŠJ‚­iNFCƒ^ƒbƒ`‚Å‘JˆÚj</li>
+          <li>‰º‚ÌuƒLƒƒƒ‰ƒtƒŒ[ƒ€‹N“®v‚ğ‰Ÿ‚·</li>
+        </ol>
+      </div>
 
-  // ...ï¼ˆ UIã¯ãã®ã¾ã¾ã€ãƒœã‚¿ãƒ³ã® onClick=toFrame / disabled={!ready || !tag}ï¼‰
+      <div style={{ marginTop: 24 }}>
+        <button
+          onClick={start}
+          disabled={state === 'working'}
+          style={{
+            background: '#10b981', color: '#0b1220', border: 0,
+            padding: '12px 20px', borderRadius: 8, fontWeight: 700, cursor: 'pointer'
+          }}
+        >
+          ƒLƒƒƒ‰ƒtƒŒ[ƒ€‹N“®
+        </button>
+        <div style={{ marginTop: 12, minHeight: 24 }}>
+          {state !== 'idle' && <span>{msg}</span>}
+        </div>
+        <div style={{ marginTop: 8, opacity: .7, fontSize: 12 }}>
+          ó‘Ô: {state} / ƒ^ƒO: {tag || '(‚È‚µ)'} / ƒLƒƒƒ‰: {char || '(‚È‚µ)'}
+        </div>
+      </div>
+    </div>
+  )
 }

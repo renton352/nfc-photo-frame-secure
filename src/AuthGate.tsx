@@ -1,51 +1,40 @@
-import React from 'react';
+import React from 'react'
 
-export default function AuthGate({ children }:{children:React.ReactNode}) {
-  const [ok, setOk] = React.useState<boolean | null>(null);
+function getQuery() {
+  const u = new URL(location.href)
+  return {
+    from: u.searchParams.get('from') || '',
+    fresh: u.searchParams.get('fresh') || '',
+    char: u.searchParams.get('char') || ''
+  }
+}
+
+export default function AuthGate({ children }: { children: React.ReactNode }) {
+  const [{ ok, reason, loading }, set] = React.useState({ ok: false, reason: '', loading: true })
 
   React.useEffect(() => {
-    const cur = new URL(location.href);
-    const needFresh = cur.searchParams.get('from') === 'setup';
+    const q = getQuery()
+    const params = new URLSearchParams()
+    if (q.from === 'setup' && q.fresh === '1') params.set('fresh', '1')
 
-    fetch(`/api/auth/check${needFresh ? '?fresh=1' : ''}`, {
-      credentials: 'include',
-      cache: 'no-store'
-    })
-      .then(async (r) => {
-        if (r.ok) {
-          setOk(true);
-          // URLã‚’ã‚¯ãƒªãƒ¼ãƒ³ã«ï¼ˆå…±æœ‰ãƒ»PWAç”¨ï¼‰
-          if (needFresh) {
-            const clean = new URL(location.href);
-            clean.searchParams.delete('from');
-            clean.searchParams.delete('tag');
-            history.replaceState(null, '', clean.toString());
-          }
-        } else {
-          let apiTag: string | undefined;
-          let reason: string | undefined;
-          try {
-            const j = await r.json();
-            if (j?.tag) apiTag = String(j.tag);
-            if (j?.reason) reason = String(j.reason);
-          } catch {}
+    fetch(`/api/auth/check?${params.toString()}`, { method: 'GET' })
+      .then(r => r.json())
+      .then(j => set({ ok: !!j.ok, reason: j.reason || '', loading: false }))
+      .catch(() => set({ ok: false, reason: 'network', loading: false }))
+  }, [])
 
-          const u = new URL('/setup', location.origin);
-          const char = cur.searchParams.get('char') || undefined;
-          const tag  = cur.searchParams.get('tag') || apiTag || undefined;
-          if (char) u.searchParams.set('char', char);
-          if (tag)  u.searchParams.set('tag', tag);
-          if (reason === 'expired') u.searchParams.set('expired', '1'); // ãƒ¡ãƒƒã‚»ãƒ¼ã‚¸ç”¨
-          location.replace(u.toString());
-          setOk(false);
-        }
-      }) 
-      .catch(() => setOk(false));
-  }, []);
-
-  if (ok === null) {
-    return <div className="min-h-screen grid place-items-center text-white bg-slate-900">ç¢ºèªä¸­...</div>;
+  if (loading) {
+    return <div style={{ padding: 24 }}>Šm”F’†c</div>
   }
-  if (!ok) return null;
-  return <>{children}</>;
+
+  if (!ok) {
+    // ŠúŒÀØ‚ê“™BƒZƒbƒgƒAƒbƒv‚Ö–ß‚·iƒƒbƒZ[ƒW•t‚«j
+    const q = getQuery()
+    const back = new URL(location.origin + `/setup?char=${encodeURIComponent(q.char)}&expired=1`)
+    history.replaceState({}, '', back)
+    location.reload()
+    return null
+  }
+
+  return <>{children}</>
 }

@@ -1,26 +1,11 @@
 {
-  "id": "/",
   "name": "NFC Photo Frame",
-  "short_name": "PhotoFrame",
-  "description": "NFCタグで起動するPWAフォトフレーム",
-  "start_url": "/frame",
-  "scope": "/",
+  "short_name": "NFC Frame",
+  "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
   "icons": [
-    {
-      "src": "/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
-    }
-  ],
-  "prefer_related_applications": false
+    { "src": "/favicon.ico", "sizes": "64x64 32x32 16x16", "type": "image/x-icon" }
+  ]
 }
