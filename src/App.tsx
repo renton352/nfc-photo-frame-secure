@@ -3,6 +3,9 @@ import { motion } from "framer-motion";
 
 /**
  * App.tsx — Safari運用 / NFC→claim保存→起動時にCache/LSからip,cara取得
+ * 変更点：
+ * - 効果音を WebAudio(AudioContext) で再生（iOSの自動再生制限を回避）
+ * - doCapture 内の再生順：pre → カウントダウン → フラッシュ＆描画＆shutter → post
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -240,7 +243,83 @@ export default function App() {
 
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // 音声ユーティリティ
+  // ====== 音声（WebAudio）====================================================
+
+  // WebAudio: コンテキスト＆キャッシュ
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const ensureAudioCtx = () => {
+    const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!audioCtxRef.current) audioCtxRef.current = new Ctx();
+    return audioCtxRef.current!;
+  };
+  const voiceBufCache = useRef<Map<string, AudioBuffer>>(new Map());
+
+  // decodeAudioData（Safari互換）
+  async function decodeToBuffer(ctx: AudioContext, ab: ArrayBuffer): Promise<AudioBuffer> {
+    // Safari古い環境用：コールバック版を優先
+    // @ts-ignore
+    if (ctx.decodeAudioData.length >= 2) {
+      return await new Promise<AudioBuffer>((resolve, reject) => {
+        // @ts-ignore
+        ctx.decodeAudioData(ab, (buf: AudioBuffer) => resolve(buf), (err: any) => reject(err));
+      });
+    }
+    return await ctx.decodeAudioData(ab);
+  }
+
+  // packs or 内蔵から音声を取り出して AudioBuffer に
+  async function loadVoiceBuffer(name: "pre" | "shutter" | "post"): Promise<AudioBuffer | null> {
+    const key = `${ip || "builtin"}/${name}`;
+    const cached = voiceBufCache.current.get(key);
+    if (cached) return cached;
+
+    let blob: Blob | undefined;
+
+    // 1) packs（IndexedDB→ネット）
+    if (ip) {
+      const idbKey = `voice/${ip}/${name}`;
+      blob = await idbGetBlob(idbKey);
+      if (!blob) {
+        blob = await fetchFirstBlob([
+          `/packs/${ip}/voice/${name}.mp3`,
+          `/packs/${ip}/voice/${name}.ogg`,
+          `/packs/${ip}/voice/${name}.wav`,
+        ]);
+        if (blob) { try { await idbPutBlob(idbKey, blob); } catch {} }
+      }
+    }
+
+    // 2) 内蔵の候補
+    if (!blob) {
+      const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
+      const url = Object.values(builtinVoices).find(u => re.test(u));
+      if (url) {
+        try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {}
+      }
+    }
+    if (!blob) return null;
+
+    try {
+      const ctx = ensureAudioCtx();
+      const buf = await decodeToBuffer(ctx, await blob.arrayBuffer());
+      voiceBufCache.current.set(key, buf);
+      return buf;
+    } catch { return null; }
+  }
+
+  // 再生完了まで待つ
+  function playBufferAndWait(buf: AudioBuffer): Promise<void> {
+    const ctx = ensureAudioCtx();
+    return new Promise((resolve) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.onended = () => resolve();
+      try { src.start(); } catch { resolve(); }
+    });
+  }
+
+  // 既存のビープ（フォールバック用）
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -276,23 +355,6 @@ export default function App() {
       } catch { resolve(); }
     });
   };
-  const pickVoice = async (name: "pre" | "shutter" | "post") => {
-    if (!ip) {
-      const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
-      return Object.values(builtinVoices).find((u) => re.test(u));
-    }
-    const key = `voice/${ip}/${name}`;
-    const cached = await idbGetBlob(key);
-    if (cached) return URL.createObjectURL(cached);
-    const net = await fetchFirstBlob([
-      `/packs/${ip}/voice/${name}.mp3`,
-      `/packs/${ip}/voice/${name}.ogg`,
-      `/packs/${ip}/voice/${name}.wav`,
-    ]);
-    if (net) { await idbPutBlob(key, net); return URL.createObjectURL(net); }
-    const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
-    return Object.values(builtinVoices).find((u) => re.test(u));
-  };
 
   // 撮影
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
@@ -319,22 +381,32 @@ export default function App() {
     if (shooting) return;
     setShooting(true);
     try {
-      let preUrl: string | undefined;
-      let shutterUrl: string | undefined;
-      let postUrl: string | undefined;
+      // ====== ここから WebAudio 版の再生制御 ======
+      let preBuf: AudioBuffer | null = null;
+      let shutterBuf: AudioBuffer | null = null;
+      let postBuf: AudioBuffer | null = null;
+
       if (sfxOn) {
-        preUrl = await pickVoice("pre");
-        shutterUrl = await pickVoice("shutter");
-        postUrl = await pickVoice("post");
-        if (preUrl) await playAndWait(preUrl);
+        // ユーザー操作直後に解除
+        try { await ensureAudioCtx().resume(); } catch {}
+        preBuf     = await loadVoiceBuffer("pre");
+        shutterBuf = await loadVoiceBuffer("shutter");
+        postBuf    = await loadVoiceBuffer("post");
+        if (preBuf) await playBufferAndWait(preBuf); // pre を鳴らしきってからカウントダウン
       }
+      // ====== ここまで ======
+
       for (let i = countdownSec; i >= 1; i--) { setCountdown(i); await wait(1000); }
       setCountdown(0);
 
       setFlash(true);
       navigator.vibrate?.(60);
       setTimeout(() => setFlash(false), 120);
-      const shutterPromise = sfxOn ? (shutterUrl ? playAndWait(shutterUrl) : playBeepAndWait()) : Promise.resolve();
+
+      // シャッター音：WebAudioで並行再生（無ければビープ）
+      const shutterPromise = sfxOn
+        ? (shutterBuf ? playBufferAndWait(shutterBuf) : playBeepAndWait())
+        : Promise.resolve();
 
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext("2d")!;
@@ -384,7 +456,8 @@ export default function App() {
       setShots((prev) => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
 
       await shutterPromise;
-      if (sfxOn && postUrl) await playAndWait(postUrl);
+
+      if (sfxOn && postBuf) await playBufferAndWait(postBuf);
     } finally {
       setShooting(false);
     }
@@ -450,7 +523,7 @@ export default function App() {
           <div
             ref={stageRef}
             className="relative w-full overflow-hidden rounded-3xl bg-black select-none"
-            style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }}  // ★ 親にも touch-action: none
+            style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }}  // 親にも touch-action: none
           >
             {!usingPlaceholder ? (
               <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" style={{ transform: facing === "user" ? "scaleX(-1)" : "none" }} />
