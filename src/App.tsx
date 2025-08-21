@@ -25,9 +25,38 @@ const builtinVoices     = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}",   {
 const builtinFramePNGs  = import.meta.glob("./assets/frames/*.{png,webp}",     { eager: true, as: "url" }) as Record<string, string>;
 
 export default function App() {
-  const params = new URLSearchParams(location.search);
-  const ip   = params.get("ip")   ?? "default";
-  const cara = params.get("cara") ?? "";
+const params = new URLSearchParams(location.search);
+const initIp = params.get("ip") || "";
+const initCara = params.get("cara") || "";
+
+const [ip, setIp] = useState(initIp);
+const [cara, setCara] = useState(initCara);
+
+// 初回：URLに無ければ localStorage から復元してURLも書き換え
+useEffect(() => {
+  if (!initIp || !initCara) {
+    try {
+      const saved = localStorage.getItem("last-ip-cara");
+      if (saved) {
+        const { ip: sIp, cara: sCara } = JSON.parse(saved);
+        if (sIp && sCara) {
+          setIp(sIp); setCara(sCara);
+          const usp = new URLSearchParams(location.search);
+          usp.set("ip", sIp); usp.set("cara", sCara);
+          history.replaceState(null, "", `${location.pathname}?${usp.toString()}`);
+        }
+      }
+    } catch {}
+  }
+}, []);
+
+// 毎回：取得できたら保存（NFCで開いた時に自動学習）
+useEffect(() => {
+  if (ip && cara) {
+    try { localStorage.setItem("last-ip-cara", JSON.stringify({ ip, cara })); } catch {}
+  }
+}, [ip, cara]);
+
 
   // 画面/カメラの初期設定
   const urlCamera = params.get("camera") === "back" ? "environment" : "user";
