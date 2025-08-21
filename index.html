@@ -2,12 +2,31 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f172a">
-    <link rel="manifest" href="manifest.json">
-    <title>NFC × Web その場でフォトフレーム</title>
+    <link rel="icon" href="/favicon.ico" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>NFC Photo Frame</title>
+
+    <!-- PWA 基本 -->
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS PWA 対応 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="NFC Photo Frame" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+
+    <!-- “真っ白”保険：CSS/Tailwind/SWが壊れても読める最低限の見た目 -->
+    <style>
+      html, body, #root { height: 100%; }
+      body { margin: 0; background: #0f172a; color: #fff; }
+    </style>
   </head>
   <body>
+    <noscript>このアプリを利用するには JavaScript を有効にしてください。</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
