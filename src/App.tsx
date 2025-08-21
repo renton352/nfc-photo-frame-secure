@@ -284,7 +284,6 @@ export default function App() {
 
       // (3) フラッシュ & 撮影 & shutter を同時にスタート
       setFlash(true);
-	navigator.vibrate?.(60);     // ← 追加（対応端末なら振動）
       setTimeout(() => setFlash(false), 120);
 
       // shutterは同時に再生開始し、後で終了待機
