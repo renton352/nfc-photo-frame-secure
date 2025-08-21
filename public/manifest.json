@@ -1,11 +1,20 @@
 {
   "name": "NFC Photo Frame",
-  "short_name": "NFC Frame",
-  "start_url": "/",
+  "short_name": "OshiCam",
+  "start_url": ".",
   "display": "standalone",
-  "background_color": "#0b1220",
-  "theme_color": "#0b1220",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
   "icons": [
-    { "src": "/favicon.ico", "sizes": "64x64 32x32 16x16", "type": "image/x-icon" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
   ]
 }
