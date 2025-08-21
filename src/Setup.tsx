@@ -13,37 +13,37 @@ export default function Setup() {
 
   const start = async () => {
     if (!tag) {
-      setMsg('ƒ^ƒOî•ñ‚ª‚ ‚è‚Ü‚¹‚ñi?tag= ‚ª•K—vj')
+      setMsg('ã‚¿ã‚°æƒ…å ±ãŒã‚ã‚Šã¾ã›ã‚“ï¼ˆ?tag= ãŒå¿…è¦ï¼‰')
       setState('error')
       return
     }
     setState('working')
-    setMsg('Šm”F’†...')
+    setMsg('ç¢ºèªä¸­...')
 
     try {
       const r = await fetch(`/api/setup/start?tag=${encodeURIComponent(tag)}`, { method: 'GET' })
       const j = await r.json()
       if (!j.ok) throw new Error(j.error || 'setup failed')
 
-      // ‰‰ñ‚Í 1 •ª§ŒÀ‚ğ‰Û‚·‚½‚ßA?from=setup&fresh=1 ‚ğ•t—^‚µ‚Ä‘JˆÚ
+      // åˆå›ã¯ 1 åˆ†åˆ¶é™ã‚’èª²ã™ãŸã‚ã€?from=setup&fresh=1 ã‚’ä»˜ä¸ã—ã¦é·ç§»
       const to = new URL(location.origin + `/frame?char=${encodeURIComponent(char)}&from=setup&fresh=1`)
       history.pushState({}, '', to)
       location.reload()
     } catch (e: any) {
       setState('error')
-      setMsg(e?.message || '’ÊM‚É¸”s‚µ‚Ü‚µ‚½')
+      setMsg(e?.message || 'é€šä¿¡ã«å¤±æ•—ã—ã¾ã—ãŸ')
     }
   }
 
   return (
     <div style={{ maxWidth: 520, margin: '48px auto', color: '#e6e6e6', fontFamily: 'system-ui, sans-serif' }}>
-      <h1>‰Šúİ’èi1‰ñ‚¾‚¯j</h1>
-      <p>PWA ‰»‚ÍŒã‚ÅB‚Ü‚¸‚Í NFC ƒ^ƒO‚©‚ç‹N“®‚Å‚«‚é‚©‚ğŠm”F‚µ‚Ü‚·B</p>
+      <h1>åˆæœŸè¨­å®šï¼ˆ1å›ã ã‘ï¼‰</h1>
+      <p>PWA åŒ–ã¯å¾Œã§ã€‚ã¾ãšã¯ NFC ã‚¿ã‚°ã‹ã‚‰èµ·å‹•ã§ãã‚‹ã‹ã‚’ç¢ºèªã—ã¾ã™ã€‚</p>
 
       <div style={{ background: '#192132', padding: 16, borderRadius: 8, marginTop: 16 }}>
         <ol>
-          <li>ƒuƒ‰ƒEƒU‚Å‚±‚Ìƒy[ƒW‚ğŠJ‚­iNFCƒ^ƒbƒ`‚Å‘JˆÚj</li>
-          <li>‰º‚ÌuƒLƒƒƒ‰ƒtƒŒ[ƒ€‹N“®v‚ğ‰Ÿ‚·</li>
+          <li>ãƒ–ãƒ©ã‚¦ã‚¶ã§ã“ã®ãƒšãƒ¼ã‚¸ã‚’é–‹ãï¼ˆNFCã‚¿ãƒƒãƒã§é·ç§»ï¼‰</li>
+          <li>ä¸‹ã®ã€Œã‚­ãƒ£ãƒ©ãƒ•ãƒ¬ãƒ¼ãƒ èµ·å‹•ã€ã‚’æŠ¼ã™</li>
         </ol>
       </div>
 
@@ -56,13 +56,13 @@ export default function Setup() {
             padding: '12px 20px', borderRadius: 8, fontWeight: 700, cursor: 'pointer'
           }}
         >
-          ƒLƒƒƒ‰ƒtƒŒ[ƒ€‹N“®
+          ã‚­ãƒ£ãƒ©ãƒ•ãƒ¬ãƒ¼ãƒ èµ·å‹•
         </button>
         <div style={{ marginTop: 12, minHeight: 24 }}>
           {state !== 'idle' && <span>{msg}</span>}
         </div>
         <div style={{ marginTop: 8, opacity: .7, fontSize: 12 }}>
-          ó‘Ô: {state} / ƒ^ƒO: {tag || '(‚È‚µ)'} / ƒLƒƒƒ‰: {char || '(‚È‚µ)'}
+          çŠ¶æ…‹: {state} / ã‚¿ã‚°: {tag || '(ãªã—)'} / ã‚­ãƒ£ãƒ©: {char || '(ãªã—)'}
         </div>
       </div>
     </div>

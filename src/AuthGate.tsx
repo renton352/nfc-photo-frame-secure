@@ -24,11 +24,11 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   }, [])
 
   if (loading) {
-    return <div style={{ padding: 24 }}>Šm”F’†c</div>
+    return <div style={{ padding: 24 }}>ç¢ºèªä¸­â€¦</div>
   }
 
   if (!ok) {
-    // ŠúŒÀØ‚ê“™BƒZƒbƒgƒAƒbƒv‚Ö–ß‚·iƒƒbƒZ[ƒW•t‚«j
+    // æœŸé™åˆ‡ã‚Œç­‰ã€‚ã‚»ãƒƒãƒˆã‚¢ãƒƒãƒ—ã¸æˆ»ã™ï¼ˆãƒ¡ãƒƒã‚»ãƒ¼ã‚¸ä»˜ãï¼‰
     const q = getQuery()
     const back = new URL(location.origin + `/setup?char=${encodeURIComponent(q.char)}&expired=1`)
     history.replaceState({}, '', back)
