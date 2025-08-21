@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
- * App.tsx（manifest不要・命名規則だけで差し替え）— FIXED
+ * App.tsx（manifest不要・命名規則だけで差し替え）— 撮影シーケンス調整版
  * - 入口URLは固定: https://nfc-photo-frame-secure.vercel.app/
  * - NFCの引数: ?ip=<IP名>&cara=<キャラID>
  * - 探すパス（存在すれば自動採用／無ければ内蔵にフォールバック）
@@ -10,9 +10,9 @@ import { motion } from "framer-motion";
  *   Frame PNG: /packs/<ip>/frames/<frameId>_<aspect>.(png|webp)  ← 任意
  *   Voices   : /packs/<ip>/voice/{pre|shutter|post}.(mp3|ogg|wav) ← 任意
  *
- * 重要修正：
- * - onPointerMove で「前回座標を読んで差分反映 → 最後に現在座標を保存」
- *   先に保存すると差分が常に0になり、ドラッグ/拡大回転が効かなくなります。
+ * 撮影手順（要求どおり）：
+ * pre 再生 → 終了後カウントダウン → フラッシュ＆撮影＆shutter同時開始 →
+ * shutter終了後 post 再生
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -68,6 +68,10 @@ export default function App() {
   const [countdownSec, setCountdownSec] = useState(Math.max(0, isFinite(urlCd) ? urlCd : 3));
   const [showGuide, setShowGuide] = useState(urlGuide);
   const [sfxOn, setSfxOn] = useState(true);
+
+  // 撮影状態/フラッシュ
+  const [shooting, setShooting] = useState(false);
+  const [flash, setFlash] = useState(false);
 
   // カメラ
   const [facing, setFacing] = useState<"user" | "environment">(urlCamera as any);
@@ -196,7 +200,7 @@ export default function App() {
 
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ボイス（規則 or 内蔵 or ビープ）
+  // ==== 音声ユーティリティ ====
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -209,7 +213,35 @@ export default function App() {
     } catch {}
   };
 
-  const playAudio = async (url?: string) => { if (!url) return; try { const a = new Audio(url); a.volume = 1; await a.play(); } catch {} };
+  // 終了(onended)まで待つ版
+  const playAndWait = async (url?: string) => {
+    if (!url) return;
+    await new Promise<void>((resolve) => {
+      try {
+        const a = new Audio(url);
+        a.onended = () => resolve();
+        a.onerror = () => resolve();
+        a.play().catch(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
+  };
+
+  const playBeepAndWait = async () => {
+    await new Promise<void>((resolve) => {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const o = ctx.createOscillator(); const g = ctx.createGain();
+        o.type = "triangle"; o.frequency.setValueAtTime(880, ctx.currentTime);
+        g.gain.setValueAtTime(0.001, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
+        o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2);
+        setTimeout(resolve, 210);
+      } catch { resolve(); }
+    });
+  };
 
   const pickVoice = async (name: "pre" | "shutter" | "post") => {
     const cand = await pickExisting([
@@ -228,82 +260,108 @@ export default function App() {
   const [countdown, setCountdown] = useState(0);
 
   const doCapture = async () => {
-    for (let i = countdownSec; i >= 1; i--) { setCountdown(i); await wait(500); }
-    setCountdown(0);
-
-    const canvas = canvasRef.current!; const ctx = canvas.getContext("2d")!;
-    const [w, h] = aspect === "1:1" ? [1000, 1000] : aspect === "16:9" ? [1280, 720] : [900, 1200];
-    canvas.width = w; canvas.height = h;
-
-    // 背景（Video or placeholder）
-    if (!usingPlaceholder && videoRef.current && (videoRef.current as any).videoWidth) {
-      const vw = (videoRef.current as any).videoWidth;
-      const vh = (videoRef.current as any).videoHeight;
-      const s  = Math.max(w / vw, h / vh);
-      const dw = vw * s, dh = vh * s;
-      const dx = (w - dw) / 2, dy = (h - dh) / 2;
-      const mirror = facing === "user";
-      if (mirror) {
-        ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1);
-        ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh);
-        ctx.restore();
-      } else {
-        ctx.drawImage(videoRef.current!, dx, dy, dw, dh);
+    if (shooting) return;
+    setShooting(true);
+    try {
+      // (1) pre を先に再生し、終わるまで待機
+      let preUrl: string | undefined;
+      let shutterUrl: string | undefined;
+      let postUrl: string | undefined;
+      if (sfxOn) {
+        preUrl     = await pickVoice("pre");
+        shutterUrl = await pickVoice("shutter");
+        postUrl    = await pickVoice("post");
+        if (preUrl) await playAndWait(preUrl);
       }
-    } else {
-      const g = ctx.createLinearGradient(0, 0, w, h);
-      g.addColorStop(0, "#6ee7b7"); g.addColorStop(1, "#93c5fd");
-      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
-    }
 
-    // キャラ合成（stage 基準 → canvas 基準に変換）
-    if (charUrl && stageRef.current) {
-      const stageW = stageSize.w, stageH = stageSize.h;
-      const ratio  = stageW && stageH ? w / stageW : 1;
-      const baseW  = Math.min(stageW * baseWidthRatio, 380);
-      const drawW  = baseW * scale * ratio;
-      const img    = await loadImage(charUrl);
-      const drawH  = (img.naturalHeight / img.naturalWidth) * drawW;
-      const centerX = (stageW / 2 + cx) * ratio;
-      const centerY = (stageH / 2 + cy) * ratio;
+      // (2) カウントダウン（1秒刻み）
+      for (let i = countdownSec; i >= 1; i--) {
+        setCountdown(i);
+        await wait(1000);            // 実秒でカウント
+      }
+      setCountdown(0);
 
-      ctx.save();
-      ctx.translate(centerX, centerY);
-      ctx.rotate((rot * Math.PI) / 180);
-      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
-      ctx.restore();
-    }
+      // (3) フラッシュ & 撮影 & shutter を同時にスタート
+      setFlash(true);
+      setTimeout(() => setFlash(false), 120);
 
-    // フレーム合成（/packs/<ip>/frames/<frameId>_<aspect>.(png|webp) → 内蔵PNG → プログラム描画）
-    const key = `${activeFrame}_${aspect.replace(":", "x")}`;
-    const overlay = await pickExisting([
-      `/packs/${ip}/frames/${key}.png`,
-      `/packs/${ip}/frames/${key}.webp`,
-    ], "image");
+      // shutterは同時に再生開始し、後で終了待機
+      const shutterPromise = sfxOn
+        ? (shutterUrl ? playAndWait(shutterUrl) : playBeepAndWait())
+        : Promise.resolve();
 
-    if (overlay) {
-      const img = await loadImage(overlay);
-      ctx.drawImage(img, 0, 0, w, h);
-    } else {
-      const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === key)?.[1];
-      if (builtin) {
-        const img = await loadImage(builtin);
+      // ---- 撮影処理 ----
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext("2d")!;
+      const [w, h] = aspect === "1:1" ? [1000, 1000] : aspect === "16:9" ? [1280, 720] : [900, 1200];
+      canvas.width = w; canvas.height = h;
+
+      if (!usingPlaceholder && videoRef.current && (videoRef.current as any).videoWidth) {
+        const vw = (videoRef.current as any).videoWidth;
+        const vh = (videoRef.current as any).videoHeight;
+        const s  = Math.max(w / vw, h / vh);
+        const dw = vw * s, dh = vh * s;
+        const dx = (w - dw) / 2, dy = (h - dh) / 2;
+        const mirror = facing === "user";
+        if (mirror) {
+          ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1);
+          ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh);
+          ctx.restore();
+        } else {
+          ctx.drawImage(videoRef.current!, dx, dy, dw, dh);
+        }
+      } else {
+        const g = ctx.createLinearGradient(0, 0, w, h);
+        g.addColorStop(0, "#6ee7b7"); g.addColorStop(1, "#93c5fd");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+      }
+
+      // キャラ
+      if (charUrl && stageRef.current) {
+        const stageW = stageSize.w, stageH = stageSize.h;
+        const ratio  = stageW && stageH ? w / stageW : 1;
+        const baseW  = Math.min(stageW * 0.5, 380);
+        const drawW  = baseW * scale * ratio;
+        const img    = await loadImage(charUrl);
+        const drawH  = (img.naturalHeight / img.naturalWidth) * drawW;
+        const centerX = (stageW / 2 + cx) * ratio;
+        const centerY = (stageH / 2 + cy) * ratio;
+        ctx.save(); ctx.translate(centerX, centerY); ctx.rotate((rot * Math.PI) / 180);
+        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH); ctx.restore();
+      }
+
+      // フレーム
+      const key = `${activeFrame}_${aspect.replace(":", "x")}`;
+      const overlay = await pickExisting([
+        `/packs/${ip}/frames/${key}.png`,
+        `/packs/${ip}/frames/${key}.webp`,
+      ], "image");
+      if (overlay) {
+        const img = await loadImage(overlay);
         ctx.drawImage(img, 0, 0, w, h);
       } else {
-        drawProgramFrame(ctx, activeFrame, w, h);
+        const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === key)?.[1];
+        if (builtin) {
+          const img = await loadImage(builtin);
+          ctx.drawImage(img, 0, 0, w, h);
+        } else {
+          drawProgramFrame(ctx, activeFrame, w, h);
+        }
       }
-    }
 
-    const dataUrl = canvas.toDataURL("image/png");
-    setShots(prev => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
+      const dataUrl = canvas.toDataURL("image/png");
+      setShots(prev => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
+      // ---- 撮影ここまで ----
 
-    if (sfxOn) {
-      const pre     = await pickVoice("pre");
-      const shutter = await pickVoice("shutter");
-      const post    = await pickVoice("post");
-      if (pre)     await playAudio(pre);
-      if (shutter) await playAudio(shutter); else await playBeep();
-      if (post)    await playAudio(post);
+      // (4) shutterの終了待ち
+      await shutterPromise;
+
+      // (5) shutterが終わってから post を再生
+      if (sfxOn && postUrl) {
+        await playAndWait(postUrl);
+      }
+    } finally {
+      setShooting(false);
     }
   };
 
@@ -366,7 +424,13 @@ export default function App() {
             <button onClick={()=>setSfxOn(v=>!v)} className={"rounded-2xl px-3 py-2 font-semibold "+(sfxOn?"bg-emerald-500 hover:bg-emerald-400":"bg-slate-700 hover:bg-slate-600")}>
               セリフ/効果音{ sfxOn ? "ON" : "OFF"}
             </button>
-            <button onClick={doCapture} className="rounded-2xl px-4 py-2 bg-emerald-500 hover:bg-emerald-400 font-semibold shadow">撮影する</button>
+            <button
+              disabled={shooting}
+              onClick={doCapture}
+              className={"rounded-2xl px-4 py-2 font-semibold shadow " + (shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400")}
+            >
+              {shooting ? "撮影中…" : "撮影する"}
+            </button>
             <span className="text-slate-300 text-sm">{usingPlaceholder ? "※プレビューはダミー背景です" : ready ? "カメラ準備OK" : "準備中…"}</span>
           </div>
         </motion.div>
@@ -415,6 +479,17 @@ export default function App() {
                 {Array.from({ length: 9 }).map((_, i) => (<div key={i} className="border border-white/20" />))}
                 <div className="absolute inset-0 border-2 border-white/30 rounded-xl" />
               </div>
+            )}
+
+            {/* 撮影音に合わせたフラッシュ */}
+            {flash && (
+              <motion.div
+                key="flash"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.12 }}
+                className="absolute inset-0 bg-white/80 pointer-events-none"
+              />
             )}
 
             {/* カウントダウン */}
@@ -484,6 +559,21 @@ function ProgramFrameOverlay({ active }: { active: FrameKind }) {
     );
   }
   return null;
+}
+
+function drawProgramFrame(ctx: CanvasRenderingContext2D, active: FrameKind, w: number, h: number) {
+  switch (active) {
+    case "sparkle":
+      ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 18; ctx.strokeRect(16, 16, w - 32, h - 32); break;
+    case "ribbon":
+      ctx.strokeStyle = "rgba(244,114,182,0.9)"; ctx.lineWidth = 24; ctx.strokeRect(20, 20, w - 40, h - 40);
+      ctx.fillStyle = "rgba(244,114,182,1)"; const rw = Math.min(300, w * 0.45); ctx.fillRect((w - rw) / 2, 8, rw, 56);
+      ctx.fillStyle = "white"; ctx.font = "bold 28px system-ui"; ctx.textAlign = "center"; ctx.fillText("With ❤️ from Oshi", w / 2, 45); break;
+    case "neon":
+      ctx.strokeStyle = "rgba(0,255,255,0.8)"; (ctx as any).shadowColor = "rgba(0,255,255,0.6)"; (ctx as any).shadowBlur = 25;
+      ctx.lineWidth = 16; ctx.strokeRect(26, 26, w - 52, h - 52); (ctx as any).shadowBlur = 0;
+      ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.font = "bold 38px system-ui"; ctx.textAlign = "center"; ctx.fillText("Oshi Camera", w / 2, h - 32); break;
+  }
 }
 
 /* -------- ヘルパ -------- */
