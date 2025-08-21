@@ -1,21 +1,17 @@
 {
+  "version": 2,
   "trailingSlash": false,
   "cleanUrls": true,
 
   "headers": [
-    { "source": "/api/(.*)",         "headers": [{ "key": "Cache-Control", "value": "no-store" }] },
-    { "source": "/sw.js",            "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
-    { "source": "/manifest.json",    "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
-    { "source": "/index.html",       "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+    { "source": "/api/(.*)",       "headers": [{ "key": "Cache-Control", "value": "no-store" }] },
+    { "source": "/sw.js",          "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/manifest.json",  "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/index.html",     "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
   ],
 
-  "routes": [
-    { "src": "^/api/.*", "dest": "/api" },
-
-    // まずはビルド成果物（/dist 内の実ファイル）にマッチさせる
-    { "handle": "filesystem" },
-
-    // それ以外（/setup, /frame など）は必ず SPA 用に index.html を返す
-    { "src": ".*", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)",     "destination": "/index.html" }
   ]
 }
