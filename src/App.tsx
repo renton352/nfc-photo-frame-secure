@@ -26,18 +26,21 @@ export default function App() {
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-  // 起動時：SWから {ip,cara} を受け取る（/api/bootstrap をfetch）
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/bootstrap", { cache: "no-store" });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.ip && data?.cara) { setIp(data.ip); setCara(data.cara); }
+// 起動時：CacheStorage から {ip,cara} を読む（URL/LS/サーバ不要）
+useEffect(() => {
+  (async () => {
+    try {
+      if ('caches' in window) {
+        const cache = await caches.open('oshi-profile-v1');
+        const res = await cache.match('/__profile__/current');
+        if (res) {
+          const { ip, cara } = await res.json();
+          if (ip && cara) { setIp(ip); setCara(cara); }
         }
-      } catch {}
-    })();
-  }, []);
+      }
+    } catch {}
+  })();
+}, []);
 
   // 画面/カメラの任意クエリ（※ip/caraとは無関係。残してOK）
   const params = new URLSearchParams(location.search);
