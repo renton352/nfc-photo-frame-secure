@@ -1,11 +1,12 @@
 {
+  "version": 2,
   "routes": [
     { "handle": "filesystem" },
 
-    // SPA のエントリにしたいパス（/setup と /frame）
+    // これらのパスは常に SPA エントリ（index.html）へ
     { "src": "/(setup|frame)(?:/.*)?", "dest": "/index.html" },
 
-    // それ以外も（/api/ を除いて）index.html にフォールバック
+    // /api/ を除くすべてを index.html にフォールバック
     { "src": "/(?!api/).*", "dest": "/index.html" }
   ]
 }
