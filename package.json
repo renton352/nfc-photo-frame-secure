@@ -2,7 +2,7 @@
   "version": 2,
   "cleanUrls": true,
   "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1" },   // © API ‚Í‘f’Ê‚µ
-    { "src": "/(.*)", "dest": "/index.html" }    // © ‚»‚êˆÈŠO‚Íí‚É SPA ‚ÌƒGƒ“ƒgƒŠ‚Ö
+    { "src": "/api/(.*)", "dest": "/api/$1" },   // â† API ã¯ç´ é€šã—
+    { "src": "/(.*)", "dest": "/index.html" }    // â† ãã‚Œä»¥å¤–ã¯å¸¸ã« SPA ã®ã‚¨ãƒ³ãƒˆãƒªã¸
   ]
 }
