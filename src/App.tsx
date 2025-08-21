@@ -277,12 +277,14 @@ export default function App() {
       // (2) カウントダウン（1秒刻み）
       for (let i = countdownSec; i >= 1; i--) {
         setCountdown(i);
-        await wait(1000);            // 実秒でカウント
+	  await playBeepAndWait();   // ← 追加（0.2秒ビープ）
+	  await wait(800);           // 合計ほぼ1秒になるよう調整
       }
       setCountdown(0);
 
       // (3) フラッシュ & 撮影 & shutter を同時にスタート
       setFlash(true);
+	navigator.vibrate?.(60);     // ← 追加（対応端末なら振動）
       setTimeout(() => setFlash(false), 120);
 
       // shutterは同時に再生開始し、後で終了待機
