@@ -39,7 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const sig = createHmac('sha256', secret).update(payload).digest('base64url');
   const sid = `${payload}.${sig}`;
 
-  // sid（30日）
+  // sid（30日 ）
   setCookie(res, 'sid', sid, 60 * 60 * 24 * 30);
 
   res.status(200).json({ ok: true });

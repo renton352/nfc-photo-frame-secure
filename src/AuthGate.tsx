@@ -39,7 +39,7 @@ export default function AuthGate({ children }:{children:React.ReactNode}) {
           location.replace(u.toString());
           setOk(false);
         }
-      })
+      }) 
       .catch(() => setOk(false));
   }, []);
 
