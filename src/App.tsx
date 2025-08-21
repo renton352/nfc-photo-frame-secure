@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
- * App.tsx — NFC素材だけローカル保存（IndexedDB）版
- * - オフライン起動はしない（Service Worker 不要）
- * - ただし NFC の ?ip / ?cara で参照した「キャラ画像/ボイス/フレームPNG」は IndexedDB に保存
- *   → 同じ ip/cara に再アクセスした時はローカルから即座に使える
- * - 既存機能：ドラッグ／ピンチ回転拡大／撮影シーケンス（pre→CD→flash&shot&shutter→post）
+ * App.tsx — PWA起動での ip/cara 自動復元 + NFC素材だけローカル保存（IndexedDB）
+ * - オフライン起動(SW)は行わない
+ * - NFCで参照した キャラ/フレームPNG/ボイス を IndexedDB に保存し再利用
+ * - PWAアイコン起動で URLに?ip&cara が無くても localStorage から復元して URL を置換
+ * - 撮影シーケンス: pre→（完了）→ カウントダウン → フラッシュ&撮影&shutter →（完了）→ post
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -25,40 +25,42 @@ const builtinVoices     = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}",   {
 const builtinFramePNGs  = import.meta.glob("./assets/frames/*.{png,webp}",     { eager: true, as: "url" }) as Record<string, string>;
 
 export default function App() {
-const params = new URLSearchParams(location.search);
-const initIp = params.get("ip") || "";
-const initCara = params.get("cara") || "";
+  // --- URLから初期値を取得 ---
+  const params = new URLSearchParams(location.search);
+  const initIp = params.get("ip") || "";
+  const initCara = params.get("cara") || "";
 
-const [ip, setIp] = useState(initIp);
-const [cara, setCara] = useState(initCara);
+  // --- ip/cara を state 化（復元・保存のため） ---
+  const [ip, setIp] = useState(initIp);
+  const [cara, setCara] = useState(initCara);
 
-// 初回：URLに無ければ localStorage から復元してURLも書き換え
-useEffect(() => {
-  if (!initIp || !initCara) {
-    try {
-      const saved = localStorage.getItem("last-ip-cara");
-      if (saved) {
-        const { ip: sIp, cara: sCara } = JSON.parse(saved);
-        if (sIp && sCara) {
-          setIp(sIp); setCara(sCara);
-          const usp = new URLSearchParams(location.search);
-          usp.set("ip", sIp); usp.set("cara", sCara);
-          history.replaceState(null, "", `${location.pathname}?${usp.toString()}`);
+  // URLに無ければ localStorage から復元して URL を置き換え
+  useEffect(() => {
+    if (!initIp || !initCara) {
+      try {
+        const saved = localStorage.getItem("last-ip-cara");
+        if (saved) {
+          const { ip: sIp, cara: sCara } = JSON.parse(saved);
+          if (sIp && sCara) {
+            setIp(sIp); setCara(sCara);
+            const usp = new URLSearchParams(location.search);
+            usp.set("ip", sIp); usp.set("cara", sCara);
+            history.replaceState(null, "", `${location.pathname}?${usp.toString()}`);
+          }
         }
-      }
-    } catch {}
-  }
-}, []);
+      } catch {}
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-// 毎回：取得できたら保存（NFCで開いた時に自動学習）
-useEffect(() => {
-  if (ip && cara) {
-    try { localStorage.setItem("last-ip-cara", JSON.stringify({ ip, cara })); } catch {}
-  }
-}, [ip, cara]);
+  // 読み取った ip/cara を保存（NFC起動時に自動学習）
+  useEffect(() => {
+    if (ip && cara) {
+      try { localStorage.setItem("last-ip-cara", JSON.stringify({ ip, cara })); } catch {}
+    }
+  }, [ip, cara]);
 
-
-  // 画面/カメラの初期設定
+  // 画面/カメラの初期設定（任意クエリ）
   const urlCamera = params.get("camera") === "back" ? "environment" : "user";
   const urlAspect = (params.get("aspect") as Aspect | null) ?? "3:4";
   const urlCd     = Number(params.get("cd") ?? 3);
@@ -66,17 +68,22 @@ useEffect(() => {
 
   // ==== キャラ画像（IndexedDBキャッシュ対応） ====
   const [charUrl, setCharUrl] = useState<string>("");
+
   useEffect(() => {
     let cancelled = false;
+
+    // ip/cara 未設定なら一旦クリア＆終了（無駄fetch防止）
+    if (!ip || !cara) { setCharUrl(""); return; }
+
     (async () => {
-      // 1) IndexedDB から取得（あれば Blob→ObjectURL）
+      // 1) IndexedDB から取得（Blob→ObjectURL）
       const cacheKey = `char/${ip}/${cara}`;
       const cached = await idbGetBlob(cacheKey);
       if (cached && !cancelled) {
         setCharUrl(URL.createObjectURL(cached));
         return;
       }
-      // 2) ネットからフェッチ→IndexedDBへ保存→ObjectURL
+      // 2) ネットからフェッチ→保存→ObjectURL
       const net = await fetchFirstBlob([
         `/packs/${ip}/characters/${cara}.png`,
         `/packs/${ip}/characters/${cara}.webp`,
@@ -88,16 +95,17 @@ useEffect(() => {
         setCharUrl(URL.createObjectURL(net));
         return;
       }
-      // 3) フォールバック（内蔵）
+      // 3) フォールバック（内蔵の最初）
       const fallback = Object.values(builtinCharacters)[0] ?? "";
       if (!cancelled) setCharUrl(fallback);
     })();
+
     return () => { cancelled = true; };
   }, [ip, cara]);
 
-  // ObjectURLの後始末（メモリ漏れ防止）
+  // charUrl（blob:）を差し替え時/アンマウント時に解放
   useEffect(() => {
-    return () => { if (charUrl.startsWith("blob:")) URL.revokeObjectURL(charUrl); };
+    return () => { if (charUrl?.startsWith("blob:")) URL.revokeObjectURL(charUrl); };
   }, [charUrl]);
 
   // フレーム（プログラム描画3種）
@@ -152,6 +160,7 @@ useEffect(() => {
       setReady(true);
     }
   };
+
   useEffect(() => { startStream(facing); return () => stopStream(); }, [facing]);
 
   // ステージサイズ
@@ -230,7 +239,7 @@ useEffect(() => {
 
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ==== 音声（IndexedDBキャッシュ対応） ====
+  // ==== 音声ユーティリティ（IndexedDBキャッシュ対応） ====
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -243,14 +252,18 @@ useEffect(() => {
     } catch {}
   };
 
+  // 再生完了まで待つ（blob: は終了時に解放）
   const playAndWait = async (url?: string) => {
     if (!url) return;
     await new Promise<void>((resolve) => {
       try {
         const a = new Audio(url);
-        a.onended = () => resolve();
-        a.onerror = () => resolve();
-        a.play().catch(() => resolve());
+        const done = () => {
+          try { if (url.startsWith("blob:")) URL.revokeObjectURL(url); } finally { resolve(); }
+        };
+        a.onended = done;
+        a.onerror = done;
+        a.play().catch(done);
       } catch { resolve(); }
     });
   };
@@ -270,11 +283,13 @@ useEffect(() => {
     });
   };
 
-  // IndexedDB から音声を取り出す（なければネット→保存→ObjectURL、さらに内蔵も候補）
+  // 音声の取得（キャッシュ→ネット→内蔵）の順
   const pickVoice = async (name: "pre" | "shutter" | "post") => {
     const key = `voice/${ip}/${name}`;
+    // 1) キャッシュ
     const cached = await idbGetBlob(key);
     if (cached) return URL.createObjectURL(cached);
+    // 2) ネット
     const net = await fetchFirstBlob([
       `/packs/${ip}/voice/${name}.mp3`,
       `/packs/${ip}/voice/${name}.ogg`,
@@ -284,12 +299,12 @@ useEffect(() => {
       await idbPutBlob(key, net);
       return URL.createObjectURL(net);
     }
-    // 内蔵から類推
+    // 3) 内蔵から類推
     const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
     return Object.values(builtinVoices).find(u => re.test(u));
   };
 
-  // 撮影
+  // ==== 撮影 ====
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
   const [countdown, setCountdown] = useState(0);
 
@@ -409,12 +424,21 @@ useEffect(() => {
   const [previewOverlay, setPreviewOverlay] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+
+    // ip 未設定時はクリア（無駄fetch防止）
+    if (!ip) { setPreviewOverlay(null); return; }
+
     (async () => {
       const u = await getOverlayURL(activeFrame, aspect);
       if (!cancelled) setPreviewOverlay(u);
     })();
     return () => { cancelled = true; };
   }, [ip, activeFrame, aspect]);
+
+  // previewOverlay（blob:）も差し替え時/アンマウント時に解放
+  useEffect(() => {
+    return () => { if (previewOverlay?.startsWith("blob:")) URL.revokeObjectURL(previewOverlay); };
+  }, [previewOverlay]);
 
   // UI
   return (
@@ -426,6 +450,15 @@ useEffect(() => {
             固定URL + <span className="font-mono">?ip</span>/<span className="font-mono">?cara</span> で素材を切替。<br/>
             参照した素材（キャラ/ボイス/フレームPNG）は端末に保存して再利用します。
           </p>
+
+          {/* 初回未設定のガード表示（任意） */}
+          {(!ip || !cara) && (
+            <div className="mb-3 rounded-xl bg-amber-500/15 border border-amber-400/30 px-3 py-2 text-amber-100 text-sm">
+              初回セットアップが必要です。NFCタグから一度このアプリを開くか、
+              <span className="font-mono">?ip=◯◯&cara=△△</span> をURLに付けてアクセスしてください。
+              （一度読み込めば次回以降は自動復元されます）
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
             <select value={activeFrame} onChange={(e)=>setActiveFrame(e.target.value as FrameKind)} className="rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2">
@@ -582,7 +615,7 @@ function ProgramFrameOverlay({ active }: { active: FrameKind }) {
     return (
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-4 rounded-2xl" style={{ boxShadow: "0 0 12px rgba(0,255,255,0.8), inset 0 0 24px rgba(0,255,255,0.35)" }} />
-        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text白" style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}>
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text-white" style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}>
           Oshi Camera
         </div>
       </div>
@@ -597,7 +630,7 @@ function drawProgramFrame(ctx: CanvasRenderingContext2D, active: FrameKind, w: n
       ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 18; ctx.strokeRect(16, 16, w - 32, h - 32); break;
     case "ribbon":
       ctx.strokeStyle = "rgba(244,114,182,0.9)"; ctx.lineWidth = 24; ctx.strokeRect(20, 20, w - 40, h - 40);
-      ctx.fillStyle = "rgba(244,114,182,1)"; const rw = Math.min(300, w * 0.45); ctx.fillRect((w - rw) / 2, 8, rw, 56);
+      ctx.fillStyle = "rgba(244,114,182,1)"; { const rw = Math.min(300, w * 0.45); ctx.fillRect((w - rw) / 2, 8, rw, 56); }
       ctx.fillStyle = "white"; ctx.font = "bold 28px system-ui"; ctx.textAlign = "center"; ctx.fillText("With ❤️ from Oshi", w / 2, 45); break;
     case "neon":
       ctx.strokeStyle = "rgba(0,255,255,0.8)"; (ctx as any).shadowColor = "rgba(0,255,255,0.6)"; (ctx as any).shadowBlur = 25;
