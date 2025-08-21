@@ -1,12 +1,7 @@
 {
   "version": 2,
-  "routes": [
-    { "handle": "filesystem" },
-
-    // これらのパスは常に SPA エントリ（index.html）へ
-    { "src": "/(setup|frame)(?:/.*)?", "dest": "/index.html" },
-
-    // /api/ を除くすべてを index.html にフォールバック
-    { "src": "/(?!api/).*", "dest": "/index.html" }
+  "rewrites": [
+    { "source": "/(setup|frame)(?:/.*)?", "destination": "/index.html" },
+    { "source": "/(?!api/).*", "destination": "/index.html" }
   ]
 }
