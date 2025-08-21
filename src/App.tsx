@@ -26,17 +26,15 @@ export default function App() {
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-// 起動時：CacheStorage から {ip,cara} を読む（URL/LS/サーバ不要）
+// 起動時：サーバから {ip,cara} を取得（Cookieベース）
+// これが確定すると、以降の素材ロードが今まで通り動きます
 useEffect(() => {
   (async () => {
     try {
-      if ('caches' in window) {
-        const cache = await caches.open('oshi-profile-v1');
-        const res = await cache.match('/__profile__/current');
-        if (res) {
-          const { ip, cara } = await res.json();
-          if (ip && cara) { setIp(ip); setCara(cara); }
-        }
+      const res = await fetch('/api/bootstrap', { credentials: 'include', cache: 'no-store' });
+      if (res.ok) {
+        const { ip, cara } = await res.json();
+        setIp(ip); setCara(cara);
       }
     } catch {}
   })();

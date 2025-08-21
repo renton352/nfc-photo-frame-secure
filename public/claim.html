@@ -6,25 +6,25 @@
 <div>設定中…</div>
 <script>
 (async () => {
-  // NFCタグ: /claim.html#ip=...&cara=... もしくは ?ip=...&cara=...
+  // NFCタグ: /claim.html#ip=...&cara=...（? でもOK）
   const qs = location.hash.slice(1) || location.search.slice(1);
   const sp = new URLSearchParams(qs);
   const ip = sp.get('ip'), cara = sp.get('cara');
 
-  // まずURLからパラメータを隠す（漏洩防止）
+  // URLからパラメータをまず消す（漏洩防止）
   history.replaceState(null, '', '/');
 
   if (!ip || !cara) { location.replace('/'); return; }
 
-  // CacheStorage にプロフィールを書き込む（SW不要）
+  // サーバへ POST → サーバが HttpOnly Cookie を設定
   try {
-    const cache = await caches.open('oshi-profile-v1');
-    await cache.put('/__profile__/current',
-      new Response(JSON.stringify({ ip, cara }), {
-        headers: { 'Content-Type': 'application/json' }
-      })
-    );
-  } catch (e) { /* 失敗してもそのまま遷移 */ }
+    await fetch('/api/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ ip, cara }),
+    });
+  } catch {}
 
   // ホームへ
   location.replace('/');
