@@ -1,8 +1,7 @@
 {
-  "version": 2,
   "cleanUrls": true,
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1" },   // ← API は素通し
-    { "src": "/(.*)", "dest": "/index.html" }    // ← それ以外は常に SPA のエントリへ
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
