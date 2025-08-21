@@ -3,9 +3,10 @@ import { motion } from "framer-motion";
 
 /**
  * App.tsx — Safari運用 / NFC→claim保存→起動時にCache/LSからip,cara取得
- * 変更点：
+ * 含まれる変更:
  * - 効果音を WebAudio(AudioContext) で再生（iOSの自動再生制限を回避）
- * - doCapture 内の再生順：pre → カウントダウン → フラッシュ＆描画＆shutter → post
+ * - ジェスチャー安定化（2本指開始時の中点基準、pointer capture 不使用）
+ * - NFC未連携（ip/cara無し）時は「撮影する」以外すべて無効化
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -13,20 +14,20 @@ type FrameKind = "sparkle" | "ribbon" | "neon";
 const ASPECTS: Aspect[] = ["3:4", "1:1", "16:9"];
 const PROGRAM_FRAMES: { id: FrameKind; name: string }[] = [
   { id: "sparkle", name: "キラキラ・フレーム" },
-  { id: "ribbon",  name: "リボン・フレーム"   },
-  { id: "neon",    name: "ネオン・フレーム"   },
+  { id: "ribbon", name: "リボン・フレーム" },
+  { id: "neon", name: "ネオン・フレーム" },
 ];
 
 // 内蔵素材（src/assets）
 const builtinCharacters = import.meta.glob("./assets/characters/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
-const builtinVoices     = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}",   { eager: true, as: "url" }) as Record<string, string>;
-const builtinFramePNGs  = import.meta.glob("./assets/frames/*.{png,webp}",     { eager: true, as: "url" }) as Record<string, string>;
+const builtinVoices = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}", { eager: true, as: "url" }) as Record<string, string>;
+const builtinFramePNGs = import.meta.glob("./assets/frames/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
 
 export default function App() {
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-  // 起動時：CacheStorage → localStorage の順で読み取り（Safariのみ）
+  // 起動時：CacheStorage → localStorage の順で読み取り（Safari運用）
   useEffect(() => {
     (async () => {
       let profile: any = null;
@@ -50,7 +51,10 @@ export default function App() {
     })();
   }, []);
 
-  // 画面/カメラの任意クエリ（ip/caraとは無関係）
+  // ダイレクトアクセス判定（未連携ならロック）
+  const locked = !ip || !cara;
+
+  // 任意クエリ（UI既定）
   const params = new URLSearchParams(location.search);
   const urlCamera = params.get("camera") === "back" ? "environment" : "user";
   const urlAspect = (params.get("aspect") as Aspect | null) ?? "3:4";
@@ -61,8 +65,10 @@ export default function App() {
   const [charUrl, setCharUrl] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
-    if (!ip || !cara) { setCharUrl(""); return; }
-
+    if (!ip || !cara) {
+      setCharUrl("");
+      return;
+    }
     (async () => {
       const cacheKey = `char/${ip}/${cara}`;
       const cached = await idbGetBlob(cacheKey);
@@ -84,10 +90,10 @@ export default function App() {
       const fallback = Object.values(builtinCharacters)[0] ?? "";
       if (!cancelled) setCharUrl(fallback);
     })();
-
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [ip, cara]);
-
   useEffect(() => () => { if (charUrl?.startsWith("blob:")) URL.revokeObjectURL(charUrl); }, [charUrl]);
 
   // フレーム・UI状態
@@ -173,13 +179,13 @@ export default function App() {
   const baseWidthRatio = 0.5;
   const [isGesturing, setIsGesturing] = useState(false);
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
-  // ★ 2本指開始時の中点(mx,my)を保持
+  // 2本指開始時の中点（基準）
   const gestureStart = useRef<{
     d: number; a: number; scale: number; rot: number; cx: number; cy: number; mx: number; my: number;
   } | null>(null);
 
   const onPointerDown = (e: React.PointerEvent) => {
-    // iOS Safari で不安定になるため capture は使わない
+    if (locked) return; // ★ロック中は無効
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.current.size === 2) {
       const ps = Array.from(pointers.current.values());
@@ -190,16 +196,16 @@ export default function App() {
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (locked) return; // ★ロック中は無効
     if (!pointers.current.has(e.pointerId)) return;
     const curr = { x: e.clientX, y: e.clientY };
 
-    // 更新後の点群で評価
     const map = new Map(pointers.current);
     map.set(e.pointerId, curr);
     const ps = Array.from(map.values());
 
     if (ps.length === 2 && gestureStart.current) {
-      if (e.cancelable) e.preventDefault(); // ページのスクロール/ズームを抑止
+      if (e.cancelable) e.preventDefault();
       const d = dist(ps[0], ps[1]);
       const a = angle(ps[0], ps[1]);
       const ms = midpoint(ps[0], ps[1]);
@@ -208,10 +214,9 @@ export default function App() {
       setScale(clamp(g0.scale * (d / g0.d), 0.3, 4));
 
       let delta = a - g0.a;
-      delta = ((delta + 180) % 360) - 180; // -180..180 に正規化
+      delta = ((delta + 180) % 360) - 180;
       setRot(g0.rot + delta);
 
-      // ★ 中点の差分だけ加算（画面外に飛ばない）
       setCx(g0.cx + (ms.x - g0.mx));
       setCy(g0.cy + (ms.y - g0.my));
     } else if (pointers.current.size === 1 && !isGesturing) {
@@ -232,6 +237,7 @@ export default function App() {
   };
 
   const onWheel = (e: React.WheelEvent) => {
+    if (locked) return; // ★ロック中は無効
     if (e.ctrlKey) {
       e.preventDefault();
       setScale((s) => clamp(s * (e.deltaY < 0 ? 1.06 : 0.94), 0.3, 4));
@@ -241,11 +247,15 @@ export default function App() {
     }
   };
 
-  const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
+  const resetChar = () => {
+    setCx(0);
+    setCy(0);
+    setScale(1);
+    setRot(0);
+  };
 
   // ====== 音声（WebAudio）====================================================
 
-  // WebAudio: コンテキスト＆キャッシュ
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -254,9 +264,8 @@ export default function App() {
   };
   const voiceBufCache = useRef<Map<string, AudioBuffer>>(new Map());
 
-  // decodeAudioData（Safari互換）
   async function decodeToBuffer(ctx: AudioContext, ab: ArrayBuffer): Promise<AudioBuffer> {
-    // Safari古い環境用：コールバック版を優先
+    // Safari互換（callback版）
     // @ts-ignore
     if (ctx.decodeAudioData.length >= 2) {
       return await new Promise<AudioBuffer>((resolve, reject) => {
@@ -267,7 +276,6 @@ export default function App() {
     return await ctx.decodeAudioData(ab);
   }
 
-  // packs or 内蔵から音声を取り出して AudioBuffer に
   async function loadVoiceBuffer(name: "pre" | "shutter" | "post"): Promise<AudioBuffer | null> {
     const key = `${ip || "builtin"}/${name}`;
     const cached = voiceBufCache.current.get(key);
@@ -275,7 +283,7 @@ export default function App() {
 
     let blob: Blob | undefined;
 
-    // 1) packs（IndexedDB→ネット）
+    // packs（IDB→ネット）
     if (ip) {
       const idbKey = `voice/${ip}/${name}`;
       blob = await idbGetBlob(idbKey);
@@ -285,16 +293,23 @@ export default function App() {
           `/packs/${ip}/voice/${name}.ogg`,
           `/packs/${ip}/voice/${name}.wav`,
         ]);
-        if (blob) { try { await idbPutBlob(idbKey, blob); } catch {} }
+        if (blob) {
+          try {
+            await idbPutBlob(idbKey, blob);
+          } catch {}
+        }
       }
     }
 
-    // 2) 内蔵の候補
+    // 内蔵
     if (!blob) {
       const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
-      const url = Object.values(builtinVoices).find(u => re.test(u));
+      const url = Object.values(builtinVoices).find((u) => re.test(u));
       if (url) {
-        try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {}
+        try {
+          const r = await fetch(url);
+          if (r.ok) blob = await r.blob();
+        } catch {}
       }
     }
     if (!blob) return null;
@@ -304,10 +319,11 @@ export default function App() {
       const buf = await decodeToBuffer(ctx, await blob.arrayBuffer());
       voiceBufCache.current.set(key, buf);
       return buf;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  // 再生完了まで待つ
   function playBufferAndWait(buf: AudioBuffer): Promise<void> {
     const ctx = ensureAudioCtx();
     return new Promise((resolve) => {
@@ -315,46 +331,34 @@ export default function App() {
       src.buffer = buf;
       src.connect(ctx.destination);
       src.onended = () => resolve();
-      try { src.start(); } catch { resolve(); }
+      try {
+        src.start();
+      } catch {
+        resolve();
+      }
     });
   }
 
-  // 既存のビープ（フォールバック用）
+  // 既存のビープ（フォールバック）
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const o = ctx.createOscillator(); const g = ctx.createGain();
-      o.type = "triangle"; o.frequency.setValueAtTime(880, ctx.currentTime);
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "triangle";
+      o.frequency.setValueAtTime(880, ctx.currentTime);
       g.gain.setValueAtTime(0.001, ctx.currentTime);
       g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
-      o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2);
+      o.connect(g).connect(ctx.destination);
+      o.start();
+      o.stop(ctx.currentTime + 0.2);
     } catch {}
   };
-  const playAndWait = async (url?: string) => {
-    if (!url) return;
-    await new Promise<void>((resolve) => {
-      try {
-        const a = new Audio(url);
-        const done = () => { try { if (url.startsWith("blob:")) URL.revokeObjectURL(url); } finally { resolve(); } };
-        a.onended = done; a.onerror = done; a.play().catch(done);
-      } catch { resolve(); }
+  const playBeepAndWait = async () =>
+    new Promise<void>((resolve) => {
+      playBeep().finally(() => setTimeout(resolve, 210));
     });
-  };
-  const playBeepAndWait = async () => {
-    await new Promise<void>((resolve) => {
-      try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const o = ctx.createOscillator(); const g = ctx.createGain();
-        o.type = "triangle"; o.frequency.setValueAtTime(880, ctx.currentTime);
-        g.gain.setValueAtTime(0.001, ctx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
-        o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2);
-        setTimeout(resolve, 210);
-      } catch { resolve(); }
-    });
-  };
 
   // 撮影
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
@@ -368,11 +372,11 @@ export default function App() {
     const k = `frame/${ip}/${keyBase}`;
     const cached = await idbGetBlob(k);
     if (cached) return URL.createObjectURL(cached);
-    const net = await fetchFirstBlob([
-      `/packs/${ip}/frames/${keyBase}.png`,
-      `/packs/${ip}/frames/${keyBase}.webp`,
-    ]);
-    if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
+    const net = await fetchFirstBlob([`/packs/${ip}/frames/${keyBase}.png`, `/packs/${ip}/frames/${keyBase}.webp`]);
+    if (net) {
+      await idbPutBlob(k, net);
+      return URL.createObjectURL(net);
+    }
     const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === keyBase)?.[1] ?? null;
     return builtin;
   };
@@ -381,58 +385,72 @@ export default function App() {
     if (shooting) return;
     setShooting(true);
     try {
-      // ====== ここから WebAudio 版の再生制御 ======
+      // 音準備＆pre再生
       let preBuf: AudioBuffer | null = null;
       let shutterBuf: AudioBuffer | null = null;
       let postBuf: AudioBuffer | null = null;
 
       if (sfxOn) {
-        // ユーザー操作直後に解除
-        try { await ensureAudioCtx().resume(); } catch {}
-        preBuf     = await loadVoiceBuffer("pre");
+        try {
+          await ensureAudioCtx().resume(); // ユーザー操作直後に解除
+        } catch {}
+        preBuf = await loadVoiceBuffer("pre");
         shutterBuf = await loadVoiceBuffer("shutter");
-        postBuf    = await loadVoiceBuffer("post");
-        if (preBuf) await playBufferAndWait(preBuf); // pre を鳴らしきってからカウントダウン
+        postBuf = await loadVoiceBuffer("post");
+        if (preBuf) await playBufferAndWait(preBuf);
       }
-      // ====== ここまで ======
 
-      for (let i = countdownSec; i >= 1; i--) { setCountdown(i); await wait(1000); }
+      // カウントダウン
+      for (let i = countdownSec; i >= 1; i--) {
+        setCountdown(i);
+        await wait(1000);
+      }
       setCountdown(0);
 
+      // フラッシュ・バイブ
       setFlash(true);
       navigator.vibrate?.(60);
       setTimeout(() => setFlash(false), 120);
 
-      // シャッター音：WebAudioで並行再生（無ければビープ）
-      const shutterPromise = sfxOn
-        ? (shutterBuf ? playBufferAndWait(shutterBuf) : playBeepAndWait())
-        : Promise.resolve();
+      // シャッター音（なければビープ）
+      const shutterPromise = sfxOn ? (shutterBuf ? playBufferAndWait(shutterBuf) : playBeepAndWait()) : Promise.resolve();
 
+      // 合成
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext("2d")!;
       const [w, h] = aspect === "1:1" ? [1000, 1000] : aspect === "16:9" ? [1280, 720] : [900, 1200];
-      canvas.width = w; canvas.height = h;
+      canvas.width = w;
+      canvas.height = h;
 
       if (!usingPlaceholder && videoRef.current && (videoRef.current as any).videoWidth) {
-        const vw = (videoRef.current as any).videoWidth, vh = (videoRef.current as any).videoHeight;
+        const vw = (videoRef.current as any).videoWidth,
+          vh = (videoRef.current as any).videoHeight;
         const s = Math.max(w / vw, h / vh);
-        const dw = vw * s, dh = vh * s;
-        const dx = (w - dw) / 2, dy = (h - dh) / 2;
+        const dw = vw * s,
+          dh = vh * s;
+        const dx = (w - dw) / 2,
+          dy = (h - dh) / 2;
         const mirror = facing === "user";
         if (mirror) {
-          ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1);
-          ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh); ctx.restore();
+          ctx.save();
+          ctx.translate(w, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh);
+          ctx.restore();
         } else {
           ctx.drawImage(videoRef.current!, dx, dy, dw, dh);
         }
       } else {
         const g = ctx.createLinearGradient(0, 0, w, h);
-        g.addColorStop(0, "#6ee7b7"); g.addColorStop(1, "#93c5fd");
-        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+        g.addColorStop(0, "#6ee7b7");
+        g.addColorStop(1, "#93c5fd");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
       }
 
       if (charUrl && stageRef.current) {
-        const stageW = stageSize.w, stageH = stageSize.h;
+        const stageW = stageSize.w,
+          stageH = stageSize.h;
         const ratio = stageW && stageH ? w / stageW : 1;
         const baseW = Math.min(stageW * 0.5, 380);
         const drawW = baseW * scale * ratio;
@@ -440,8 +458,11 @@ export default function App() {
         const drawH = (img.naturalHeight / img.naturalWidth) * drawW;
         const centerX = (stageW / 2 + cx) * ratio;
         const centerY = (stageH / 2 + cy) * ratio;
-        ctx.save(); ctx.translate(centerX, centerY); ctx.rotate((rot * Math.PI) / 180);
-        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH); ctx.restore();
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        ctx.rotate((rot * Math.PI) / 180);
+        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+        ctx.restore();
       }
 
       const overlayUrl = await getOverlayURL(activeFrame, aspect);
@@ -456,7 +477,6 @@ export default function App() {
       setShots((prev) => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
 
       await shutterPromise;
-
       if (sfxOn && postBuf) await playBufferAndWait(postBuf);
     } finally {
       setShooting(false);
@@ -466,16 +486,23 @@ export default function App() {
   const [previewOverlay, setPreviewOverlay] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    if (!ip) { setPreviewOverlay(null); return; }
+    if (!ip) {
+      setPreviewOverlay(null);
+      return;
+    }
     (async () => {
       const u = await getOverlayURL(activeFrame, aspect);
       if (!cancelled) setPreviewOverlay(u);
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [ip, activeFrame, aspect]);
   useEffect(() => () => { if (previewOverlay?.startsWith("blob:")) URL.revokeObjectURL(previewOverlay); }, [previewOverlay]);
 
   // UI
+  const disabledCls = (extra = "") => (locked ? ` opacity-50 cursor-not-allowed ${extra}` : extra);
+
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-slate-900 via-slate-900 to-slate-800 text-white p-4 sm:p-8">
       <div className="mx-auto max-w-7xl space-y-4">
@@ -483,38 +510,87 @@ export default function App() {
           <h1 className="text-2xl sm:text-3xl font-bold mb-2">NFC×Web その場でフォトフレーム</h1>
           <p className="text-slate-300 mb-4">NFCタグで選んだ素材は端末に保存され、次回以降も再利用されます。</p>
 
-          {(!ip || !cara) && (
+          {locked && (
             <div className="mb-3 rounded-xl bg-amber-500/15 border border-amber-400/30 px-3 py-2 text-amber-100 text-sm">
-              NFCタグをかざしてキャラクターを選択してください。（一度連携すれば以後は自動表示されます）
+              NFCタグをかざしてキャラクターを選択してください。<b>現在は「撮影する」以外の操作はできません。</b>
             </div>
           )}
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <select value={activeFrame} onChange={(e) => setActiveFrame(e.target.value as FrameKind)} className="rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2">
-              {PROGRAM_FRAMES.map((f) => (<option key={f.id} value={f.id}>{f.name}</option>))}
+            <select
+              value={activeFrame}
+              onChange={(e) => setActiveFrame(e.target.value as FrameKind)}
+              disabled={locked}
+              className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}
+            >
+              {PROGRAM_FRAMES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
             </select>
-            <select value={aspect} onChange={(e) => setAspect(e.target.value as Aspect)} className="rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2">
-              {ASPECTS.map((a) => (<option key={a} value={a}>{a}（{a === "3:4" ? "スマホ向け" : a === "1:1" ? "SNS向け" : "横長"}）</option>))}
+
+            <select
+              value={aspect}
+              onChange={(e) => setAspect(e.target.value as Aspect)}
+              disabled={locked}
+              className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}
+            >
+              {ASPECTS.map((a) => (
+                <option key={a} value={a}>
+                  {a}（{a === "3:4" ? "スマホ向け" : a === "1:1" ? "SNS向け" : "横長"}）
+                </option>
+              ))}
             </select>
-            <button onClick={() => setFacing((p) => (p === "user" ? "environment" : "user"))} className="rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600">
+
+            <button
+              onClick={() => setFacing((p) => (p === "user" ? "environment" : "user"))}
+              disabled={locked}
+              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}
+            >
               カメラ切替（今：{facing === "user" ? "自撮り" : "背面"}）
             </button>
-            <select value={countdownSec} onChange={(e) => setCountdownSec(Number(e.target.value))} className="rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2">
-              {[0, 1, 3, 5].map((s) => (<option key={s} value={s}>{s}秒</option>))}
+
+            <select
+              value={countdownSec}
+              onChange={(e) => setCountdownSec(Number(e.target.value))}
+              disabled={locked}
+              className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}
+            >
+              {[0, 1, 3, 5].map((s) => (
+                <option key={s} value={s}>
+                  {s}秒
+                </option>
+              ))}
             </select>
-            <button onClick={() => setShowGuide((v) => !v)} className="rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600">
+
+            <button
+              onClick={() => setShowGuide((v) => !v)}
+              disabled={locked}
+              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}
+            >
               ガイド{showGuide ? "ON" : "OFF"}
             </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <button onClick={resetChar} className="rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600">位置リセット</button>
-            <button onClick={() => setSfxOn((v) => !v)} className={"rounded-2xl px-3 py-2 font-semibold " + (sfxOn ? "bg-emerald-500 hover:bg-emerald-400" : "bg-slate-700 hover:bg-slate-600")}>
+            <button onClick={resetChar} disabled={locked} className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}>
+              位置リセット
+            </button>
+
+            <button
+              onClick={() => setSfxOn((v) => !v)}
+              disabled={locked}
+              className={`rounded-2xl px-3 py-2 font-semibold ${sfxOn ? "bg-emerald-500 hover:bg-emerald-400" : "bg-slate-700 hover:bg-slate-600"}${disabledCls()}`}
+            >
               セリフ/効果音{sfxOn ? "ON" : "OFF"}
             </button>
-            <button disabled={shooting} onClick={doCapture} className={"rounded-2xl px-4 py-2 font-semibold shadow " + (shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400")}>
+
+            {/* 撮影するはロックしても有効 */}
+            <button disabled={shooting} onClick={doCapture} className={`rounded-2xl px-4 py-2 font-semibold shadow ${shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400"}`}>
               {shooting ? "撮影中…" : "撮影する"}
             </button>
+
             <span className="text-slate-300 text-sm">{usingPlaceholder ? "※プレビューはダミー背景です" : ready ? "カメラ準備OK" : "準備中…"}</span>
           </div>
         </motion.div>
@@ -523,7 +599,7 @@ export default function App() {
           <div
             ref={stageRef}
             className="relative w-full overflow-hidden rounded-3xl bg-black select-none"
-            style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }}  // 親にも touch-action: none
+            style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }} // 親にも touch-action: none
           >
             {!usingPlaceholder ? (
               <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" style={{ transform: facing === "user" ? "scaleX(-1)" : "none" }} />
@@ -561,14 +637,14 @@ export default function App() {
 
             {showGuide && (
               <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3">
-                {Array.from({ length: 9 }).map((_, i) => (<div key={i} className="border border-white/20" />))}
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <div key={i} className="border border-white/20" />
+                ))}
                 <div className="absolute inset-0 border-2 border-white/30 rounded-xl" />
               </div>
             )}
 
-            {flash && (
-              <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.12 }} className="absolute inset-0 bg-white/80 pointer-events-none" />
-            )}
+            {flash && <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.12 }} className="absolute inset-0 bg-white/80 pointer-events-none" />}
 
             {countdown > 0 && (
               <div className="absolute inset-0 grid place-items-center">
@@ -620,11 +696,8 @@ function ProgramFrameOverlay({ active }: { active: FrameKind }) {
   if (active === "neon") {
     return (
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-4 rounded-2xl" style={{ boxShadow: "0 0 12px rgba(0,255,255,0.8), inset 0 0 24px rgba(0,255,255,0.35)" }} />
-        <div
-          className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text-white"
-          style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}
-        >
+        <div className="absolute inset-4 rounded-2xl" style={{ boxShadow: "0 0 12px rgba(0,255,255,0.8), inset 0 0 24px rgba(0,255,0,0.35)" }} />
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-xl font-bold text-white" style={{ background: "linear-gradient(90deg, rgba(0,255,255,0.5), rgba(255,0,255,0.5))", textShadow: "0 2px 8px rgba(0,0,0,0.6)" }}>
           Oshi Camera
         </div>
       </div>
@@ -635,25 +708,61 @@ function ProgramFrameOverlay({ active }: { active: FrameKind }) {
 function drawProgramFrame(ctx: CanvasRenderingContext2D, active: FrameKind, w: number, h: number) {
   switch (active) {
     case "sparkle":
-      ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 18; ctx.strokeRect(16, 16, w - 32, h - 32); break;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 18;
+      ctx.strokeRect(16, 16, w - 32, h - 32);
+      break;
     case "ribbon":
-      ctx.strokeStyle = "rgba(244,114,182,0.9)"; ctx.lineWidth = 24; ctx.strokeRect(20, 20, w - 40, h - 40);
-      ctx.fillStyle = "rgba(244,114,182,1)"; { const rw = Math.min(300, w * 0.45); ctx.fillRect((w - rw) / 2, 8, rw, 56); }
-      ctx.fillStyle = "white"; ctx.font = "bold 28px system-ui"; ctx.textAlign = "center"; ctx.fillText("With ❤️ from Oshi", w / 2, 45); break;
+      ctx.strokeStyle = "rgba(244,114,182,0.9)";
+      ctx.lineWidth = 24;
+      ctx.strokeRect(20, 20, w - 40, h - 40);
+      ctx.fillStyle = "rgba(244,114,182,1)";
+      {
+        const rw = Math.min(300, w * 0.45);
+        ctx.fillRect((w - rw) / 2, 8, rw, 56);
+      }
+      ctx.fillStyle = "white";
+      ctx.font = "bold 28px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("With ❤️ from Oshi", w / 2, 45);
+      break;
     case "neon":
-      ctx.strokeStyle = "rgba(0,255,255,0.8)"; (ctx as any).shadowColor = "rgba(0,255,255,0.6)"; (ctx as any).shadowBlur = 25;
-      ctx.lineWidth = 16; ctx.strokeRect(26, 26, w - 52, h - 52); (ctx as any).shadowBlur = 0;
-      ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.font = "bold 38px system-ui"; ctx.textAlign = "center"; ctx.fillText("Oshi Camera", w / 2, h - 32); break;
+      ctx.strokeStyle = "rgba(0,255,255,0.8)";
+      (ctx as any).shadowColor = "rgba(0,255,255,0.6)";
+      (ctx as any).shadowBlur = 25;
+      ctx.lineWidth = 16;
+      ctx.strokeRect(26, 26, w - 52, h - 52);
+      (ctx as any).shadowBlur = 0;
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.font = "bold 38px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("Oshi Camera", w / 2, h - 32);
+      break;
   }
 }
 
 /* -------- ヘルパ -------- */
-function wait(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
-function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
-function dist(a: { x: number; y: number }, b: { x: number; y: number }) { const dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy); }
-function angle(a: { x: number; y: number }, b: { x: number; y: number }) { const rad = Math.atan2(b.y - a.y, b.x - a.x); return (rad * 180) / Math.PI; }
-function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
-function fileBase(path: string) { return path.split("/").pop()!.replace(/\.[^.]+$/, ""); }
+function wait(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
+function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
+  const dx = a.x - b.x,
+    dy = a.y - b.y;
+  return Math.hypot(dx, dy);
+}
+function angle(a: { x: number; y: number }, b: { x: number; y: number }) {
+  const rad = Math.atan2(b.y - a.y, b.x - a.x);
+  return (rad * 180) / Math.PI;
+}
+function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+function fileBase(path: string) {
+  return path.split("/").pop()!.replace(/\.[^.]+$/, "");
+}
 async function loadImage(url: string) {
   return await new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image();
@@ -674,7 +783,10 @@ async function fetchFirstBlob(urls: string[]): Promise<Blob | undefined> {
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open("oshi-assets", 1);
-    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains("files")) db.createObjectStore("files"); };
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -689,7 +801,9 @@ async function idbGetBlob(key: string): Promise<Blob | undefined> {
       r.onsuccess = () => resolve(r.result as Blob | undefined);
       r.onerror = () => resolve(undefined);
     });
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 async function idbPutBlob(key: string, blob: Blob): Promise<void> {
   try {
