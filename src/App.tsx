@@ -4,12 +4,12 @@ import { motion } from "framer-motion";
 /**
  * App.tsx — NFCタグ経由の端末だけフル機能解放
  * - claim.html で保存した {ip, cara} を localStorage から復元
- * - 未通過端末は UI をロック（「撮影する」は有効のままに可能）
- * - セリフ/シャッター音/フレームを「cara（キャラ）単位」→「ip単位」→「内蔵」の順で読込（パターンA対応）
- *   パターンA：
- *     画像   /packs/{ip}/characters/{cara}.png
- *     音声   /packs/{ip}/characters/{cara}/voice/{pre|shutter|post}.{mp3,ogg,wav}
- *     フレーム/packs/{ip}/characters/{cara}/frames/{frame}_{aspect}.{png,webp}
+ * - 未通過端末は UI をロック（「撮影する」は有効のまま）
+ * - セリフ/シャッター音/フレームの探索順：
+ *   1) cara（キャラ）単位  /packs/{ip}/characters/{cara}/voice|frames/...
+ *   1.5) 共有（characters直下）/packs/{ip}/characters/voice|frames/...
+ *   2) ip 単位             /packs/{ip}/voice|frames/...
+ *   3) 内蔵（同梱）        ./assets/...
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -21,13 +21,13 @@ const PROGRAM_FRAMES: { id: FrameKind; name: string }[] = [
   { id: "neon", name: "ネオン・フレーム" },
 ];
 
-// 内蔵素材（src/assets 以下を任意で同梱）
+// 内蔵素材（任意）
 const builtinCharacters = import.meta.glob("./assets/characters/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
 const builtinVoices = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}", { eager: true, as: "url" }) as Record<string, string>;
 const builtinFramePNGs = import.meta.glob("./assets/frames/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
 
 export default function App() {
-  // ---- NFC 経由の選択状態 ---------------------------------------------------
+  // ---- NFC 選択状態 ---------------------------------------------------------
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
@@ -89,32 +89,22 @@ export default function App() {
   const urlCd = Number(params.get("cd") ?? 3);
   const urlGuide = params.get("guide") === "1";
 
-  // ---- キャラ画像の解決（パターンA：/packs/{ip}/characters/{cara}.png） ----
+  // ---- キャラ画像（/packs/{ip}/characters/{cara}.png 等） -------------------
   const [charUrl, setCharUrl] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
-    if (!ip || !cara) {
-      setCharUrl("");
-      return;
-    }
+    if (!ip || !cara) { setCharUrl(""); return; }
     (async () => {
       const cacheKey = `char/${ip}/${cara}`;
       const cached = await idbGetBlob(cacheKey);
-      if (cached && !cancelled) {
-        setCharUrl(URL.createObjectURL(cached));
-        return;
-      }
+      if (cached && !cancelled) { setCharUrl(URL.createObjectURL(cached)); return; }
       const net = await fetchFirstBlob([
         `/packs/${ip}/characters/${cara}.png`,
         `/packs/${ip}/characters/${cara}.webp`,
         `/packs/${ip}/characters/${cara}.jpg`,
         `/packs/${ip}/characters/${cara}.jpeg`,
       ]);
-      if (net && !cancelled) {
-        await idbPutBlob(cacheKey, net);
-        setCharUrl(URL.createObjectURL(net));
-        return;
-      }
+      if (net && !cancelled) { await idbPutBlob(cacheKey, net); setCharUrl(URL.createObjectURL(net)); return; }
       const fallback = Object.values(builtinCharacters)[0] ?? "";
       if (!cancelled) setCharUrl(fallback);
     })();
@@ -161,19 +151,11 @@ export default function App() {
               { video: true, audio: false },
             ];
       let stream: MediaStream | null = null;
-      for (const c of cs) {
-        try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch {}
-      }
+      for (const c of cs) { try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch {} }
       if (!stream) throw 0;
-      if (videoRef.current) {
-        (videoRef.current as any).srcObject = stream;
-        await videoRef.current.play();
-      }
+      if (videoRef.current) { (videoRef.current as any).srcObject = stream; await videoRef.current.play(); }
       setReady(true);
-    } catch {
-      setUsingPlaceholder(true);
-      setReady(true);
-    }
+    } catch { setUsingPlaceholder(true); setReady(true); }
   };
   useEffect(() => { startStream(facing); return () => stopStream(); }, [facing]);
 
@@ -239,8 +221,7 @@ export default function App() {
 
     pointers.current.set(e.pointerId, curr);
   };
-  const onPointerUp = (e: React.PointerEvent) => {
-    pointers.current.delete(e.pointerId);
+  const onPointerUp = () => {
     if (pointers.current.size < 2) {
       gestureStart.current = null;
       setIsGesturing(false);
@@ -248,17 +229,12 @@ export default function App() {
   };
   const onWheel = (e: React.WheelEvent) => {
     if (locked) return;
-    if (e.ctrlKey) {
-      e.preventDefault();
-      setScale((s) => clamp(s * (e.deltaY < 0 ? 1.06 : 0.94), 0.3, 4));
-    } else if (e.shiftKey) {
-      e.preventDefault();
-      setRot((r) => r + (e.deltaY < 0 ? 2 : -2));
-    }
+    if (e.ctrlKey) { e.preventDefault(); setScale((s) => clamp(s * (e.deltaY < 0 ? 1.06 : 0.94), 0.3, 4)); }
+    else if (e.shiftKey) { e.preventDefault(); setRot((r) => r + (e.deltaY < 0 ? 2 : -2)); }
   };
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ---- 音声（cara→ip→内蔵） -----------------------------------------------
+  // ---- 音声（cara→共有→ip→内蔵） ------------------------------------------
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -268,7 +244,7 @@ export default function App() {
   const voiceBufCache = useRef<Map<string, AudioBuffer>>(new Map());
 
   async function decodeToBuffer(ctx: AudioContext, ab: ArrayBuffer): Promise<AudioBuffer> {
-    // Safari 互換（callback 署名）
+    // Safari互換（callback）
     // @ts-ignore
     if (ctx.decodeAudioData.length >= 2) {
       return await new Promise<AudioBuffer>((resolve, reject) => {
@@ -279,7 +255,6 @@ export default function App() {
     return await ctx.decodeAudioData(ab);
   }
 
-  // ★ cara優先のローダ（パターンA）
   async function loadVoiceBuffer(name: "pre" | "shutter" | "post"): Promise<AudioBuffer | null> {
     const key = `${ip || "builtin"}/${cara || "default"}/${name}`;
     const cached = voiceBufCache.current.get(key);
@@ -301,7 +276,21 @@ export default function App() {
       }
     }
 
-    // 2) ip スコープ（フォールバック）
+    // 1.5) 共有（characters直下の voice）
+    if (!blob && ip) {
+      const idbKey = `voice/${ip}/_shared/${name}`;
+      blob = await idbGetBlob(idbKey);
+      if (!blob) {
+        blob = await fetchFirstBlob([
+          `/packs/${ip}/characters/voice/${name}.mp3`,
+          `/packs/${ip}/characters/voice/${name}.ogg`,
+          `/packs/${ip}/characters/voice/${name}.wav`,
+        ]);
+        if (blob) { try { await idbPutBlob(idbKey, blob); } catch {} }
+      }
+    }
+
+    // 2) ip スコープ
     if (!blob && ip) {
       const idbKey = `voice/${ip}/${name}`;
       blob = await idbGetBlob(idbKey);
@@ -315,13 +304,11 @@ export default function App() {
       }
     }
 
-    // 3) 内蔵（最終フォールバック）
+    // 3) 内蔵
     if (!blob) {
       const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
       const url = Object.values(builtinVoices).find((u) => re.test(u));
-      if (url) {
-        try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {}
-      }
+      if (url) { try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {} }
     }
     if (!blob) return null;
 
@@ -365,11 +352,11 @@ export default function App() {
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
   const [countdown, setCountdown] = useState(0);
 
-  // ★ cara優先のフレーム解決（パターンA）
+  // フレーム（cara→共有→ip→内蔵）
   const getOverlayURL = async (frame: FrameKind, asp: Aspect): Promise<string | null> => {
     const keyBase = `${frame}_${asp.replace(":", "x")}`;
 
-    // 1) cara スコープ（最優先）
+    // 1) cara スコープ
     if (ip && cara) {
       const k = `frame/${ip}/${cara}/${keyBase}`;
       const cached = await idbGetBlob(k);
@@ -378,6 +365,19 @@ export default function App() {
       const net = await fetchFirstBlob([
         `/packs/${ip}/characters/${cara}/frames/${keyBase}.png`,
         `/packs/${ip}/characters/${cara}/frames/${keyBase}.webp`,
+      ]);
+      if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
+    }
+
+    // 1.5) 共有（characters直下）
+    if (ip) {
+      const k = `frame/${ip}/_shared/${keyBase}`;
+      const cached = await idbGetBlob(k);
+      if (cached) return URL.createObjectURL(cached);
+
+      const net = await fetchFirstBlob([
+        `/packs/${ip}/characters/frames/${keyBase}.png`,
+        `/packs/${ip}/characters/frames/${keyBase}.webp`,
       ]);
       if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
     }
@@ -418,10 +418,7 @@ export default function App() {
       }
 
       // カウントダウン
-      for (let i = countdownSec; i >= 1; i--) {
-        setCountdown(i);
-        await wait(1000);
-      }
+      for (let i = countdownSec; i >= 1; i--) { setCountdown(i); await wait(1000); }
       setCountdown(0);
 
       // フラッシュ・バイブ
@@ -429,8 +426,13 @@ export default function App() {
       navigator.vibrate?.(60);
       setTimeout(() => setFlash(false), 120);
 
-      // シャッター音（なければビープ）
-      const shutterPromise = sfxOn ? (shutterBuf ? playBufferAndWait(shutterBuf) : playBeepAndWait()) : Promise.resolve();
+      // シャッター音（なければビープ）※直前に毎回 resume
+      const shutterPromise = sfxOn
+        ? (async () => {
+            try { await ensureAudioCtx().resume(); } catch {}
+            return shutterBuf ? playBufferAndWait(shutterBuf) : playBeepAndWait();
+          })()
+        : Promise.resolve();
 
       // 合成
       const canvas = canvasRef.current!;
@@ -476,18 +478,19 @@ export default function App() {
 
       // フレーム
       const overlayUrl = await getOverlayURL(activeFrame, aspect);
-      if (overlayUrl) {
-        const img = await loadImage(overlayUrl);
-        ctx.drawImage(img, 0, 0, w, h);
-      } else {
-        drawProgramFrame(ctx, activeFrame, w, h);
-      }
+      if (overlayUrl) { const img = await loadImage(overlayUrl); ctx.drawImage(img, 0, 0, w, h); }
+      else { drawProgramFrame(ctx, activeFrame, w, h); }
 
       const dataUrl = canvas.toDataURL("image/png");
       setShots((prev) => [{ url: dataUrl, ts: Date.now() }, ...prev].slice(0, 12));
 
       await shutterPromise;
-      if (sfxOn && postBuf) await playBufferAndWait(postBuf);
+
+      // 後口上
+      if (sfxOn && postBuf) {
+        try { await ensureAudioCtx().resume(); } catch {}
+        await playBufferAndWait(postBuf);
+      }
     } finally {
       setShooting(false);
     }
@@ -680,7 +683,7 @@ export default function App() {
   );
 }
 
-/* ======= フレーム（内蔵プログラム描画のフォールバック） ===================== */
+/* ======= フレーム（プログラム描画フォールバック） ========================= */
 function ProgramFrameOverlay({ active }: { active: FrameKind }) {
   if (active === "sparkle") {
     return (
@@ -753,10 +756,7 @@ async function loadImage(url: string) {
 
 async function fetchFirstBlob(urls: string[]): Promise<Blob | undefined> {
   for (const url of urls) {
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (res.ok) return await res.blob();
-    } catch {}
+    try { const res = await fetch(url, { cache: "no-store" }); if (res.ok) return await res.blob(); } catch {}
   }
   return undefined;
 }
@@ -792,7 +792,7 @@ async function idbPutBlob(key: string, blob: Blob): Promise<void> {
       const st = tx.objectStore("files");
       const r = st.put(blob, key);
       r.onsuccess = () => resolve();
-      r.onerror = () => resolve();
+      r.onerror  = () => resolve();
     });
   } catch {}
 }
