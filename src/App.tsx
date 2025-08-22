@@ -2,11 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 /**
- * App.tsx — Safari運用 / NFC→claim保存→起動時にCache/LSからip,cara取得
- * 含まれる変更:
- * - 効果音を WebAudio(AudioContext) で再生（iOSの自動再生制限を回避）
- * - ジェスチャー安定化（2本指開始時の中点基準、pointer capture 不使用）
- * - NFC未連携（ip/cara無し）時は「撮影する」以外すべて無効化
+ * App.tsx — NFCタグ経由の端末だけフル機能解放
+ * 起動時に localStorage の nfc_permits / nfc_last から ip, cara を復元。
+ * ip,cara が無い端末は「撮影する」以外をロック。
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -27,28 +25,29 @@ export default function App() {
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-  // 起動時：CacheStorage → localStorage の順で読み取り（Safari運用）
+  // ▼ ここだけ変更：nfc_permits / nfc_last から復元（最小差分）
   useEffect(() => {
-    (async () => {
-      let profile: any = null;
-      try {
-        if ("caches" in window) {
-          const cache = await caches.open("oshi-profile-v1");
-          const res = await cache.match("/__profile__/current");
-          if (res) profile = await res.json();
+    try {
+      const KEY_LIST = "nfc_permits";
+      const KEY_LAST = "nfc_last";
+      const list = JSON.parse(localStorage.getItem(KEY_LIST) || "[]") as Array<{ip:string; cara?:string; chara?:string; ts?:number}>;
+      const last = localStorage.getItem(KEY_LAST);
+
+      if (Array.isArray(list) && list.length) {
+        let picked: { ip: string; cara: string } | null = null;
+        if (last && last.includes(":")) {
+          const [lip, lc] = last.split(":");
+          picked = { ip: lip, cara: lc };
+        } else {
+          const p = list[list.length - 1];
+          picked = { ip: p.ip, cara: (p.cara ?? p.chara) as string };
         }
-      } catch {}
-      if (!profile) {
-        try {
-          const s = localStorage.getItem("last-ip-cara");
-          if (s) profile = JSON.parse(s);
-        } catch {}
+        if (picked?.ip && picked?.cara) {
+          setIp(picked.ip);
+          setCara(picked.cara);
+        }
       }
-      if (profile?.ip && profile?.cara) {
-        setIp(profile.ip);
-        setCara(profile.cara);
-      }
-    })();
+    } catch {}
   }, []);
 
   // ダイレクトアクセス判定（未連携ならロック）
@@ -171,7 +170,7 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
-  // ====== 変形（ドラッグ/ピンチ）修正版 ======
+  // ====== 変形（ドラッグ/ピンチ） ======
   const [cx, setCx] = useState(0);
   const [cy, setCy] = useState(0);
   const [scale, setScale] = useState(1);
@@ -179,7 +178,6 @@ export default function App() {
   const baseWidthRatio = 0.5;
   const [isGesturing, setIsGesturing] = useState(false);
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
-  // 2本指開始時の中点（基準）
   const gestureStart = useRef<{
     d: number; a: number; scale: number; rot: number; cx: number; cy: number; mx: number; my: number;
   } | null>(null);
@@ -255,7 +253,6 @@ export default function App() {
   };
 
   // ====== 音声（WebAudio）====================================================
-
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -294,9 +291,7 @@ export default function App() {
           `/packs/${ip}/voice/${name}.wav`,
         ]);
         if (blob) {
-          try {
-            await idbPutBlob(idbKey, blob);
-          } catch {}
+          try { await idbPutBlob(idbKey, blob); } catch {}
         }
       }
     }
@@ -331,15 +326,10 @@ export default function App() {
       src.buffer = buf;
       src.connect(ctx.destination);
       src.onended = () => resolve();
-      try {
-        src.start();
-      } catch {
-        resolve();
-      }
+      try { src.start(); } catch { resolve(); }
     });
   }
 
-  // 既存のビープ（フォールバック）
   const playBeep = async () => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -351,14 +341,11 @@ export default function App() {
       g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
       o.connect(g).connect(ctx.destination);
-      o.start();
-      o.stop(ctx.currentTime + 0.2);
+      o.start(); o.stop(ctx.currentTime + 0.2);
     } catch {}
   };
   const playBeepAndWait = async () =>
-    new Promise<void>((resolve) => {
-      playBeep().finally(() => setTimeout(resolve, 210));
-    });
+    new Promise<void>((resolve) => { playBeep().finally(() => setTimeout(resolve, 210)); });
 
   // 撮影
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
@@ -391,9 +378,7 @@ export default function App() {
       let postBuf: AudioBuffer | null = null;
 
       if (sfxOn) {
-        try {
-          await ensureAudioCtx().resume(); // ユーザー操作直後に解除
-        } catch {}
+        try { await ensureAudioCtx().resume(); } catch {}
         preBuf = await loadVoiceBuffer("pre");
         shutterBuf = await loadVoiceBuffer("shutter");
         postBuf = await loadVoiceBuffer("post");
@@ -419,22 +404,16 @@ export default function App() {
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext("2d")!;
       const [w, h] = aspect === "1:1" ? [1000, 1000] : aspect === "16:9" ? [1280, 720] : [900, 1200];
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = w; canvas.height = h;
 
       if (!usingPlaceholder && videoRef.current && (videoRef.current as any).videoWidth) {
-        const vw = (videoRef.current as any).videoWidth,
-          vh = (videoRef.current as any).videoHeight;
+        const vw = (videoRef.current as any).videoWidth, vh = (videoRef.current as any).videoHeight;
         const s = Math.max(w / vw, h / vh);
-        const dw = vw * s,
-          dh = vh * s;
-        const dx = (w - dw) / 2,
-          dy = (h - dh) / 2;
+        const dw = vw * s, dh = vh * s;
+        const dx = (w - dw) / 2, dy = (h - dh) / 2;
         const mirror = facing === "user";
         if (mirror) {
-          ctx.save();
-          ctx.translate(w, 0);
-          ctx.scale(-1, 1);
+          ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1);
           ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh);
           ctx.restore();
         } else {
@@ -442,15 +421,12 @@ export default function App() {
         }
       } else {
         const g = ctx.createLinearGradient(0, 0, w, h);
-        g.addColorStop(0, "#6ee7b7");
-        g.addColorStop(1, "#93c5fd");
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, w, h);
+        g.addColorStop(0, "#6ee7b7"); g.addColorStop(1, "#93c5fd");
+        ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
       }
 
       if (charUrl && stageRef.current) {
-        const stageW = stageSize.w,
-          stageH = stageSize.h;
+        const stageW = stageSize.w, stageH = stageSize.h;
         const ratio = stageW && stageH ? w / stageW : 1;
         const baseW = Math.min(stageW * 0.5, 380);
         const drawW = baseW * scale * ratio;
@@ -486,17 +462,12 @@ export default function App() {
   const [previewOverlay, setPreviewOverlay] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    if (!ip) {
-      setPreviewOverlay(null);
-      return;
-    }
+    if (!ip) { setPreviewOverlay(null); return; }
     (async () => {
       const u = await getOverlayURL(activeFrame, aspect);
       if (!cancelled) setPreviewOverlay(u);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [ip, activeFrame, aspect]);
   useEffect(() => () => { if (previewOverlay?.startsWith("blob:")) URL.revokeObjectURL(previewOverlay); }, [previewOverlay]);
 
@@ -524,9 +495,7 @@ export default function App() {
               className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}
             >
               {PROGRAM_FRAMES.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
+                <option key={f.id} value={f.id}>{f.name}</option>
               ))}
             </select>
 
@@ -543,51 +512,36 @@ export default function App() {
               ))}
             </select>
 
-            <button
-              onClick={() => setFacing((p) => (p === "user" ? "environment" : "user"))}
-              disabled={locked}
-              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}
-            >
+            <button onClick={() => setFacing((p) => (p === "user" ? "environment" : "user"))} disabled={locked}
+              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}>
               カメラ切替（今：{facing === "user" ? "自撮り" : "背面"}）
             </button>
 
-            <select
-              value={countdownSec}
-              onChange={(e) => setCountdownSec(Number(e.target.value))}
-              disabled={locked}
-              className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}
-            >
-              {[0, 1, 3, 5].map((s) => (
-                <option key={s} value={s}>
-                  {s}秒
-                </option>
-              ))}
+            <select value={countdownSec} onChange={(e) => setCountdownSec(Number(e.target.value))} disabled={locked}
+              className={`rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2${disabledCls()}`}>
+              {[0, 1, 3, 5].map((s) => <option key={s} value={s}>{s}秒</option>)}
             </select>
 
-            <button
-              onClick={() => setShowGuide((v) => !v)}
-              disabled={locked}
-              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}
-            >
+            <button onClick={() => setShowGuide((v) => !v)} disabled={locked}
+              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}>
               ガイド{showGuide ? "ON" : "OFF"}
             </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <button onClick={resetChar} disabled={locked} className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}>
+            <button onClick={resetChar} disabled={locked}
+              className={`rounded-2xl px-3 py-2 bg-slate-700 hover:bg-slate-600${disabledCls()}`}>
               位置リセット
             </button>
 
-            <button
-              onClick={() => setSfxOn((v) => !v)}
-              disabled={locked}
-              className={`rounded-2xl px-3 py-2 font-semibold ${sfxOn ? "bg-emerald-500 hover:bg-emerald-400" : "bg-slate-700 hover:bg-slate-600"}${disabledCls()}`}
-            >
+            <button onClick={() => setSfxOn((v) => !v)} disabled={locked}
+              className={`rounded-2xl px-3 py-2 font-semibold ${sfxOn ? "bg-emerald-500 hover:bg-emerald-400" : "bg-slate-700 hover:bg-slate-600"}${disabledCls()}`}>
               セリフ/効果音{sfxOn ? "ON" : "OFF"}
             </button>
 
             {/* 撮影するはロックしても有効 */}
-            <button disabled={shooting} onClick={doCapture} className={`rounded-2xl px-4 py-2 font-semibold shadow ${shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400"}`}>
+            <button disabled={shooting} onClick={doCapture}
+              className={`rounded-2xl px-4 py-2 font-semibold shadow ${shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400"}`}>
               {shooting ? "撮影中…" : "撮影する"}
             </button>
 
@@ -596,13 +550,11 @@ export default function App() {
         </motion.div>
 
         <motion.div className="bg-slate-800/60 rounded-2xl p-4 sm:p-6 shadow-xl border border-white/10" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-          <div
-            ref={stageRef}
-            className="relative w-full overflow-hidden rounded-3xl bg-black select-none"
-            style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }} // 親にも touch-action: none
-          >
+          <div ref={stageRef} className="relative w-full overflow-hidden rounded-3xl bg-black select-none"
+               style={{ aspectRatio: aspect.replace(":", "/"), touchAction: "none" }}>
             {!usingPlaceholder ? (
-              <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" style={{ transform: facing === "user" ? "scaleX(-1)" : "none" }} />
+              <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover"
+                     style={{ transform: facing === "user" ? "scaleX(-1)" : "none" }} />
             ) : (
               <div className="absolute inset-0 h-full w-full bg-gradient-to-br from-emerald-300 to-sky-300 grid place-items-center">
                 <div className="text-black/70 font-semibold text-lg">(カメラ権限なしのためダミー表示)</div>
@@ -622,7 +574,7 @@ export default function App() {
                 style={{
                   touchAction: "none",
                   userSelect: "none",
-                  width: `min(${baseWidthRatio * 100}%, 380px)`,
+                  width: `min(${0.5 * 100}%, 380px)`,
                   transform: `translate(calc(-50% + ${cx}px), calc(-50% + ${cy}px)) rotate(${rot}deg) scale(${scale})`,
                 }}
                 draggable={false}
@@ -637,9 +589,7 @@ export default function App() {
 
             {showGuide && (
               <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3">
-                {Array.from({ length: 9 }).map((_, i) => (
-                  <div key={i} className="border border-white/20" />
-                ))}
+                {Array.from({ length: 9 }).map((_, i) => <div key={i} className="border border-white/20" />)}
                 <div className="absolute inset-0 border-2 border-white/30 rounded-xl" />
               </div>
             )}
@@ -648,7 +598,8 @@ export default function App() {
 
             {countdown > 0 && (
               <div className="absolute inset-0 grid place-items-center">
-                <motion.div key={countdown} initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1.2, opacity: 1 }} className="bg-black/40 rounded-full w-28 h-28 grid place-items-center border border-white/30">
+                <motion.div key={countdown} initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1.2, opacity: 1 }}
+                            className="bg-black/40 rounded-full w-28 h-28 grid place-items-center border border-white/30">
                   <div className="text-5xl font-black">{countdown}</div>
                 </motion.div>
               </div>
@@ -709,84 +660,49 @@ function drawProgramFrame(ctx: CanvasRenderingContext2D, active: FrameKind, w: n
   switch (active) {
     case "sparkle":
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
-      ctx.lineWidth = 18;
-      ctx.strokeRect(16, 16, w - 32, h - 32);
+      ctx.lineWidth = 18; ctx.strokeRect(16, 16, w - 32, h - 32);
       break;
     case "ribbon":
       ctx.strokeStyle = "rgba(244,114,182,0.9)";
-      ctx.lineWidth = 24;
-      ctx.strokeRect(20, 20, w - 40, h - 40);
+      ctx.lineWidth = 24; ctx.strokeRect(20, 20, w - 40, h - 40);
       ctx.fillStyle = "rgba(244,114,182,1)";
-      {
-        const rw = Math.min(300, w * 0.45);
-        ctx.fillRect((w - rw) / 2, 8, rw, 56);
-      }
-      ctx.fillStyle = "white";
-      ctx.font = "bold 28px system-ui";
-      ctx.textAlign = "center";
+      { const rw = Math.min(300, w * 0.45); ctx.fillRect((w - rw) / 2, 8, rw, 56); }
+      ctx.fillStyle = "white"; ctx.font = "bold 28px system-ui"; ctx.textAlign = "center";
       ctx.fillText("With ❤️ from Oshi", w / 2, 45);
       break;
     case "neon":
       ctx.strokeStyle = "rgba(0,255,255,0.8)";
-      (ctx as any).shadowColor = "rgba(0,255,255,0.6)";
-      (ctx as any).shadowBlur = 25;
-      ctx.lineWidth = 16;
-      ctx.strokeRect(26, 26, w - 52, h - 52);
+      (ctx as any).shadowColor = "rgba(0,255,255,0.6)"; (ctx as any).shadowBlur = 25;
+      ctx.lineWidth = 16; ctx.strokeRect(26, 26, w - 52, h - 52);
       (ctx as any).shadowBlur = 0;
-      ctx.fillStyle = "rgba(255,255,255,0.95)";
-      ctx.font = "bold 38px system-ui";
-      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.font = "bold 38px system-ui"; ctx.textAlign = "center";
       ctx.fillText("Oshi Camera", w / 2, h - 32);
       break;
   }
 }
 
 /* -------- ヘルパ -------- */
-function wait(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function clamp(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
-}
-function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const dx = a.x - b.x,
-    dy = a.y - b.y;
-  return Math.hypot(dx, dy);
-}
-function angle(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const rad = Math.atan2(b.y - a.y, b.x - a.x);
-  return (rad * 180) / Math.PI;
-}
-function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
-function fileBase(path: string) {
-  return path.split("/").pop()!.replace(/\.[^.]+$/, "");
-}
+function wait(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
+function dist(a: { x: number; y: number }, b: { x: number; y: number }) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function angle(a: { x: number; y: number }, b: { x: number; y: number }) { return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI; }
+function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function fileBase(path: string) { return path.split("/").pop()!.replace(/\.[^.]+$/, ""); }
 async function loadImage(url: string) {
   return await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
+    const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = url;
   });
 }
 async function fetchFirstBlob(urls: string[]): Promise<Blob | undefined> {
   for (const url of urls) {
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (res.ok) return await res.blob();
-    } catch {}
+    try { const res = await fetch(url, { cache: "no-store" }); if (res.ok) return await res.blob(); } catch {}
   }
   return undefined;
 }
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open("oshi-assets", 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
-    };
+    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains("files")) db.createObjectStore("files"); };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -801,9 +717,7 @@ async function idbGetBlob(key: string): Promise<Blob | undefined> {
       r.onsuccess = () => resolve(r.result as Blob | undefined);
       r.onerror = () => resolve(undefined);
     });
-  } catch {
-    return undefined;
-  }
+  } catch { return undefined; }
 }
 async function idbPutBlob(key: string, blob: Blob): Promise<void> {
   try {
@@ -813,7 +727,7 @@ async function idbPutBlob(key: string, blob: Blob): Promise<void> {
       const st = tx.objectStore("files");
       const r = st.put(blob, key);
       r.onsuccess = () => resolve();
-      r.onerror = () => resolve();
+      r.onerror  = () => resolve();
     });
   } catch {}
 }

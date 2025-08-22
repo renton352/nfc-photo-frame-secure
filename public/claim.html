@@ -1,32 +1,39 @@
 <!doctype html>
-<meta charset="utf-8" />
-<title>Claim</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>html,body{height:100%}body{margin:0;display:grid;place-items:center;background:#0f172a;color:#fff;font:14px system-ui}</style>
-<div>設定中…</div>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Claim</title>
+  <meta name="color-scheme" content="light dark">
+  <style>html,body{height:100%;margin:0;background:#000}</style>
+</head>
+<body>
 <script>
-(async () => {
-  // NFCタグ: /claim.html#ip=...&cara=...（? でもOK）
-  const qs = location.hash.slice(1) || location.search.slice(1);
-  const sp = new URLSearchParams(qs);
-  const ip = sp.get('ip'), cara = sp.get('cara');
-
-  // URLからパラメータをまず消す（漏洩防止）
-  history.replaceState(null, '', '/');
-
+(function(){
+  // ハッシュから ip / cara を取得（例: claim.html#ip=anime1&cara=alice）
+  const hs   = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const ip   = hs.get('ip')   || '';
+  const cara = hs.get('cara') || '';
   if (!ip || !cara) { location.replace('/'); return; }
 
-  // サーバへ POST → サーバが HttpOnly Cookie を設定
-  try {
-    await fetch('/api/claim', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ ip, cara }),
-    });
-  } catch {}
+  // 既存リストを取得
+  const KEY_LIST = 'nfc_permits';
+  const KEY_LAST = 'nfc_last';
+  /** @type {{ip:string,cara:string,ts:number}[]} */
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(KEY_LIST) || '[]') } catch(_){}
 
-  // ホームへ
+  // 追記（重複回避）
+  const exists = list.some(x => x.ip===ip && x.cara===cara);
+  if (!exists) list.push({ ip, cara, ts: Date.now() });
+
+  // 保存 & 最終選択
+  localStorage.setItem(KEY_LIST, JSON.stringify(list));
+  localStorage.setItem(KEY_LAST, `${ip}:${cara}`);
+
+  // URLに何も残さず即時遷移
   location.replace('/');
 })();
 </script>
+</body>
+</html>

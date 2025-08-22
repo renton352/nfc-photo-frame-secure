@@ -1,0 +1,13 @@
+https://renton352.github.io/nfc-photo-frame/
+
+
+
+
+https://nfc-photo-frame-secure.vercel.app/claim.html#ip=anime1&cara=alice
+
+https://nfc-photo-frame-secure.vercel.app/claim.html#ip=anime1&cara=bob
+
+https://nfc-photo-frame-secure.vercel.app/claim.html#ip=anime2&cara=clear
+
+
+
