@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 
 /**
  * App.tsx — NFCタグ経由の端末だけフル機能解放
+ * 追加: これまでに読み込んだ {ip, cara} をプルダウンで選択できるUIを実装。
  * 起動時に localStorage の nfc_permits / nfc_last から ip, cara を復元。
  * ip,cara が無い端末は「撮影する」以外をロック。
  */
@@ -25,30 +26,62 @@ export default function App() {
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-  // ▼ ここだけ変更：nfc_permits / nfc_last から復元（最小差分）
+  // ▼ 追加: 許可リスト（プルダウン用）と現在選択
+  const [authorized, setAuthorized] = useState(false);
+  const [current, setCurrent] = useState<{ ip: string; cara: string } | null>(null);
+  const [permittedList, setPermittedList] = useState<{ ip: string; cara: string }[]>([]);
+
+  // ▼ 起動時に nfc_permits / nfc_last から復元（cara/chara を正規化）
   useEffect(() => {
     try {
       const KEY_LIST = "nfc_permits";
       const KEY_LAST = "nfc_last";
-      const list = JSON.parse(localStorage.getItem(KEY_LIST) || "[]") as Array<{ip:string; cara?:string; chara?:string; ts?:number}>;
-      const last = localStorage.getItem(KEY_LAST);
+      const raw = JSON.parse(localStorage.getItem(KEY_LIST) || "[]") as Array<{ ip: string; cara?: string; chara?: string; ts?: number }>;
+      const list = raw
+        .map((x) => ({ ip: x.ip, cara: x.cara ?? x.chara ?? "" }))
+        .filter((x) => !!x.ip && !!x.cara);
 
-      if (Array.isArray(list) && list.length) {
-        let picked: { ip: string; cara: string } | null = null;
-        if (last && last.includes(":")) {
-          const [lip, lc] = last.split(":");
-          picked = { ip: lip, cara: lc };
-        } else {
-          const p = list[list.length - 1];
-          picked = { ip: p.ip, cara: (p.cara ?? p.chara) as string };
-        }
-        if (picked?.ip && picked?.cara) {
-          setIp(picked.ip);
-          setCara(picked.cara);
-        }
+      setPermittedList(list);
+
+      if (list.length === 0) {
+        setAuthorized(false);
+        setIp("");
+        setCara("");
+        setCurrent(null);
+        return;
       }
-    } catch {}
+      setAuthorized(true);
+
+      const last = localStorage.getItem(KEY_LAST);
+      let picked: { ip: string; cara: string } | null = null;
+      if (last && last.includes(":")) {
+        const [lip, lc] = last.split(":");
+        picked = { ip: lip, cara: lc };
+      } else {
+        picked = list[list.length - 1] ?? null;
+      }
+
+      if (picked) {
+        setIp(picked.ip);
+        setCara(picked.cara);
+        setCurrent(picked);
+      }
+    } catch {
+      setAuthorized(false);
+      setIp("");
+      setCara("");
+      setCurrent(null);
+      setPermittedList([]);
+    }
   }, []);
+
+  // ▼ プルダウン選択時の処理
+  function choosePermit(p: { ip: string; cara: string }) {
+    localStorage.setItem("nfc_last", `${p.ip}:${p.cara}`);
+    setCurrent(p);
+    setIp(p.ip);
+    setCara(p.cara);
+  }
 
   // ダイレクトアクセス判定（未連携ならロック）
   const locked = !ip || !cara;
@@ -414,7 +447,7 @@ export default function App() {
         const mirror = facing === "user";
         if (mirror) {
           ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1);
-          ctx.drawImage(videoRef.current!, w - dx - dw, dy, dw, dh);
+          ctx.drawImage(videoRef.current!, w - dx - dw, dy, dh);
           ctx.restore();
         } else {
           ctx.drawImage(videoRef.current!, dx, dy, dw, dh);
@@ -488,6 +521,25 @@ export default function App() {
           )}
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
+            {/* ▼ 追加: 過去に読み込んだキャラのプルダウン */}
+            {authorized && permittedList.length > 0 && (
+              <select
+                value={current ? `${current.ip}:${current.cara}` : ""}
+                onChange={(e) => {
+                  const [sip, sc] = e.target.value.split(":");
+                  if (sip && sc) choosePermit({ ip: sip, cara: sc });
+                }}
+                className="rounded-xl bg-slate-700/70 border border-white/10 px-3 py-2"
+                title="過去に読み込んだキャラを選ぶ"
+              >
+                {permittedList.map((p) => (
+                  <option key={`${p.ip}:${p.cara}`} value={`${p.ip}:${p.cara}`}>
+                    {p.ip} / {p.cara}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <select
               value={activeFrame}
               onChange={(e) => setActiveFrame(e.target.value as FrameKind)}
