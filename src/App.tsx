@@ -10,6 +10,8 @@ import { motion } from "framer-motion";
  *   1.5) 共有（characters直下）/packs/{ip}/characters/voice|frames/...
  *   2) ip               /packs/{ip}/voice|frames/...
  *   3) 内蔵             ./assets/...
+ *
+ * 要件：post は “必ず鳴る” ように <audio> 直再生を優先（WebAudioは使わない）
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -132,7 +134,7 @@ export default function App() {
   const stopStream = () => {
     const v = videoRef.current as any;
     const s: MediaStream | undefined = v?.srcObject;
-    s?.getTracks?.().forEach((t) => t.stop());
+    s?.getTracks?.forEach((t) => t.stop());
     if (v) v.srcObject = null;
   };
   const startStream = async (to: "user" | "environment") => {
@@ -234,7 +236,7 @@ export default function App() {
   };
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ---- 音声（cara→共有→ip→内蔵） ------------------------------------------
+  // ---- 音声（pre/shutter は WebAudio、post は <audio> 直再生） ------------
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -243,7 +245,6 @@ export default function App() {
   };
   const voiceBufCache = useRef<Map<string, AudioBuffer>>(new Map());
 
-  // decodeAudioData（Safariは一部MP3で不安定）＋タイムアウト
   function playBufferAndWait(buf: AudioBuffer, timeoutMs = 5000): Promise<"ended" | "timeout" | "error"> {
     const ctx = ensureAudioCtx();
     return new Promise((resolve) => {
@@ -270,7 +271,7 @@ export default function App() {
   }
 
   async function decodeToBuffer(ctx: AudioContext, ab: ArrayBuffer): Promise<AudioBuffer> {
-    // Safari互換（callback）
+    // Safari 互換（callback 版）
     // @ts-ignore
     if (ctx.decodeAudioData.length >= 2) {
       return await new Promise<AudioBuffer>((resolve, reject) => {
@@ -281,7 +282,7 @@ export default function App() {
     return await ctx.decodeAudioData(ab);
   }
 
-  async function loadVoiceBuffer(name: "pre" | "shutter" | "post"): Promise<AudioBuffer | null> {
+  async function loadVoiceBuffer(name: "pre" | "shutter"): Promise<AudioBuffer | null> {
     const key = `${ip || "builtin"}/${cara || "default"}/${name}`;
     const cached = voiceBufCache.current.get(key);
     if (cached) return cached;
@@ -332,7 +333,7 @@ export default function App() {
 
     // 3) 内蔵
     if (!blob) {
-      const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
+      const re = name === "pre" ? /pre/i : /shutter|shot|camera/i;
       const url = Object.values(builtinVoices).find((u) => re.test(u));
       if (url) { try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {} }
     }
@@ -378,7 +379,7 @@ export default function App() {
     });
   }
 
-  // 再生候補URLのリスト（loadVoiceBuffer と同じ優先順）
+  // 再生候補URLのリスト（優先順：cara → 共有 → ip → 内蔵）
   function buildVoiceUrlCandidates(name: "pre" | "shutter" | "post"): string[] {
     const list: string[] = [];
     if (ip && cara) {
@@ -460,13 +461,11 @@ export default function App() {
       // ===== 音の準備 =====
       let preBuf: AudioBuffer | null = null;
       let shutterBuf: AudioBuffer | null = null;
-      let postBuf: AudioBuffer | null = null;
 
       if (sfxOn) {
         try { await ensureAudioCtx().resume(); } catch {}
         preBuf = await loadVoiceBuffer("pre");
         shutterBuf = await loadVoiceBuffer("shutter");
-        postBuf = await loadVoiceBuffer("post");
         if (preBuf) { try { await playBufferAndWait(preBuf); } catch {} }
       }
 
@@ -545,28 +544,14 @@ export default function App() {
       // ===== シャッター終了待ち =====
       await shutterPromise;
 
-      // ===== 後口上（post：必ず鳴らす） =====
+      // ===== 後口上（post：必ず鳴らす・<audio> 直再生固定） =====
       if (sfxOn) {
-        try { await ensureAudioCtx().resume(); } catch {}
-        await wait(80); // 端末によって安定する
-
+        await wait(80); // 端末安定化のため、ほんの少し待つ
         let played = false;
-
-        // 1) バッファで再生
-        if (postBuf) {
-          const st = await playBufferAndWait(postBuf);
-          played = st === "ended";
+        const candidates = buildVoiceUrlCandidates("post");
+        for (const u of candidates) {
+          if (await playAudioUrlViaElement(u)) { played = true; break; }
         }
-
-        // 2) ダメなら同じURL群を <audio> で直接再生
-        if (!played) {
-          const candidates = buildVoiceUrlCandidates("post");
-          for (const u of candidates) {
-            if (await playAudioUrlViaElement(u)) { played = true; break; }
-          }
-        }
-
-        // 3) それでもダメなら必ずビープ
         if (!played) await playBeepAndWait();
       }
     } finally {
@@ -805,9 +790,9 @@ function FramePreview({ active, ip, cara, aspect }: { active: FrameKind, ip: str
       if (!u) {
         u = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === keyBase)?.[1] ?? null;
       }
-      if (!abort) setUrl(u);
+      setUrl(u);
     })();
-    return () => { abort = true; if (url?.startsWith("blob:")) URL.revokeObjectURL(url); };
+    return () => { if (url?.startsWith("blob:")) URL.revokeObjectURL(url); };
   }, [active, ip, cara, aspect]);
 
   if (url) return <img src={url} alt="frame" className="pointer-events-none absolute inset-0 w-full h-full object-contain" />;
