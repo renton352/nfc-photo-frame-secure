@@ -3,9 +3,13 @@ import { motion } from "framer-motion";
 
 /**
  * App.tsx — NFCタグ経由の端末だけフル機能解放
- * 追加: これまでに読み込んだ {ip, cara} をプルダウンで選択できるUIを実装。
- * 起動時に localStorage の nfc_permits / nfc_last から ip, cara を復元。
- * ip,cara が無い端末は「撮影する」以外をロック。
+ * - claim.html で保存した {ip, cara} を localStorage から復元
+ * - 未通過端末は UI をロック（「撮影する」は有効のままに可能）
+ * - セリフ/シャッター音/フレームを「cara（キャラ）単位」→「ip単位」→「内蔵」の順で読込（パターンA対応）
+ *   パターンA：
+ *     画像   /packs/{ip}/characters/{cara}.png
+ *     音声   /packs/{ip}/characters/{cara}/voice/{pre|shutter|post}.{mp3,ogg,wav}
+ *     フレーム/packs/{ip}/characters/{cara}/frames/{frame}_{aspect}.{png,webp}
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -17,21 +21,20 @@ const PROGRAM_FRAMES: { id: FrameKind; name: string }[] = [
   { id: "neon", name: "ネオン・フレーム" },
 ];
 
-// 内蔵素材（src/assets）
+// 内蔵素材（src/assets 以下を任意で同梱）
 const builtinCharacters = import.meta.glob("./assets/characters/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
 const builtinVoices = import.meta.glob("./assets/voice/*.{mp3,ogg,wav}", { eager: true, as: "url" }) as Record<string, string>;
 const builtinFramePNGs = import.meta.glob("./assets/frames/*.{png,webp}", { eager: true, as: "url" }) as Record<string, string>;
 
 export default function App() {
+  // ---- NFC 経由の選択状態 ---------------------------------------------------
   const [ip, setIp] = useState<string>("");
   const [cara, setCara] = useState<string>("");
 
-  // ▼ 追加: 許可リスト（プルダウン用）と現在選択
   const [authorized, setAuthorized] = useState(false);
   const [current, setCurrent] = useState<{ ip: string; cara: string } | null>(null);
   const [permittedList, setPermittedList] = useState<{ ip: string; cara: string }[]>([]);
 
-  // ▼ 起動時に nfc_permits / nfc_last から復元（cara/chara を正規化）
   useEffect(() => {
     try {
       const KEY_LIST = "nfc_permits";
@@ -45,9 +48,7 @@ export default function App() {
 
       if (list.length === 0) {
         setAuthorized(false);
-        setIp("");
-        setCara("");
-        setCurrent(null);
+        setIp(""); setCara(""); setCurrent(null);
         return;
       }
       setAuthorized(true);
@@ -68,14 +69,10 @@ export default function App() {
       }
     } catch {
       setAuthorized(false);
-      setIp("");
-      setCara("");
-      setCurrent(null);
-      setPermittedList([]);
+      setIp(""); setCara(""); setCurrent(null); setPermittedList([]);
     }
   }, []);
 
-  // ▼ プルダウン選択時の処理
   function choosePermit(p: { ip: string; cara: string }) {
     localStorage.setItem("nfc_last", `${p.ip}:${p.cara}`);
     setCurrent(p);
@@ -83,17 +80,16 @@ export default function App() {
     setCara(p.cara);
   }
 
-  // ダイレクトアクセス判定（未連携ならロック）
   const locked = !ip || !cara;
 
-  // 任意クエリ（UI既定）
+  // ---- URL 既定 -------------------------------------------------------------
   const params = new URLSearchParams(location.search);
   const urlCamera = params.get("camera") === "back" ? "environment" : "user";
   const urlAspect = (params.get("aspect") as Aspect | null) ?? "3:4";
   const urlCd = Number(params.get("cd") ?? 3);
   const urlGuide = params.get("guide") === "1";
 
-  // ==== キャラ画像（IndexedDBキャッシュ対応） ====
+  // ---- キャラ画像の解決（パターンA：/packs/{ip}/characters/{cara}.png） ----
   const [charUrl, setCharUrl] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -122,20 +118,18 @@ export default function App() {
       const fallback = Object.values(builtinCharacters)[0] ?? "";
       if (!cancelled) setCharUrl(fallback);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [ip, cara]);
   useEffect(() => () => { if (charUrl?.startsWith("blob:")) URL.revokeObjectURL(charUrl); }, [charUrl]);
 
-  // フレーム・UI状態
+  // ---- フレーム / UI 状態 ---------------------------------------------------
   const [activeFrame, setActiveFrame] = useState<FrameKind>(PROGRAM_FRAMES[0].id);
   const [aspect, setAspect] = useState<Aspect>(urlAspect);
   const [countdownSec, setCountdownSec] = useState(Math.max(0, isFinite(urlCd) ? urlCd : 3));
   const [showGuide, setShowGuide] = useState(urlGuide);
   const [sfxOn, setSfxOn] = useState(true);
 
-  // 撮影状態/カメラ
+  // ---- カメラ ---------------------------------------------------------------
   const [shooting, setShooting] = useState(false);
   const [flash, setFlash] = useState(false);
   const [facing, setFacing] = useState<"user" | "environment">(urlCamera as any);
@@ -153,9 +147,7 @@ export default function App() {
   };
   const startStream = async (to: "user" | "environment") => {
     try {
-      stopStream();
-      setReady(false);
-      setUsingPlaceholder(false);
+      stopStream(); setReady(false); setUsingPlaceholder(false);
       const cs: MediaStreamConstraints[] =
         to === "environment"
           ? [
@@ -170,10 +162,7 @@ export default function App() {
             ];
       let stream: MediaStream | null = null;
       for (const c of cs) {
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(c);
-          break;
-        } catch {}
+        try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch {}
       }
       if (!stream) throw 0;
       if (videoRef.current) {
@@ -186,37 +175,30 @@ export default function App() {
       setReady(true);
     }
   };
-  useEffect(() => {
-    startStream(facing);
-    return () => stopStream();
-  }, [facing]);
+  useEffect(() => { startStream(facing); return () => stopStream(); }, [facing]);
 
-  // ステージサイズ
+  // ---- ステージサイズ -------------------------------------------------------
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const ro = new ResizeObserver(() => {
-      const el = stageRef.current;
-      if (!el) return;
+      const el = stageRef.current; if (!el) return;
       setStageSize({ w: el.clientWidth, h: el.clientHeight });
     });
     if (stageRef.current) ro.observe(stageRef.current);
     return () => ro.disconnect();
   }, []);
 
-  // ====== 変形（ドラッグ/ピンチ） ======
+  // ---- 変形（ドラッグ/ピンチ） ---------------------------------------------
   const [cx, setCx] = useState(0);
   const [cy, setCy] = useState(0);
   const [scale, setScale] = useState(1);
   const [rot, setRot] = useState(0);
-  const baseWidthRatio = 0.5;
   const [isGesturing, setIsGesturing] = useState(false);
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const gestureStart = useRef<{
-    d: number; a: number; scale: number; rot: number; cx: number; cy: number; mx: number; my: number;
-  } | null>(null);
+  const gestureStart = useRef<{ d: number; a: number; scale: number; rot: number; cx: number; cy: number; mx: number; my: number } | null>(null);
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (locked) return; // ★ロック中は無効
+    if (locked) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.current.size === 2) {
       const ps = Array.from(pointers.current.values());
@@ -225,9 +207,8 @@ export default function App() {
       setIsGesturing(true);
     }
   };
-
   const onPointerMove = (e: React.PointerEvent) => {
-    if (locked) return; // ★ロック中は無効
+    if (locked) return;
     if (!pointers.current.has(e.pointerId)) return;
     const curr = { x: e.clientX, y: e.clientY };
 
@@ -258,7 +239,6 @@ export default function App() {
 
     pointers.current.set(e.pointerId, curr);
   };
-
   const onPointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) {
@@ -266,9 +246,8 @@ export default function App() {
       setIsGesturing(false);
     }
   };
-
   const onWheel = (e: React.WheelEvent) => {
-    if (locked) return; // ★ロック中は無効
+    if (locked) return;
     if (e.ctrlKey) {
       e.preventDefault();
       setScale((s) => clamp(s * (e.deltaY < 0 ? 1.06 : 0.94), 0.3, 4));
@@ -277,15 +256,9 @@ export default function App() {
       setRot((r) => r + (e.deltaY < 0 ? 2 : -2));
     }
   };
+  const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  const resetChar = () => {
-    setCx(0);
-    setCy(0);
-    setScale(1);
-    setRot(0);
-  };
-
-  // ====== 音声（WebAudio）====================================================
+  // ---- 音声（cara→ip→内蔵） -----------------------------------------------
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -295,7 +268,7 @@ export default function App() {
   const voiceBufCache = useRef<Map<string, AudioBuffer>>(new Map());
 
   async function decodeToBuffer(ctx: AudioContext, ab: ArrayBuffer): Promise<AudioBuffer> {
-    // Safari互換（callback版）
+    // Safari 互換（callback 署名）
     // @ts-ignore
     if (ctx.decodeAudioData.length >= 2) {
       return await new Promise<AudioBuffer>((resolve, reject) => {
@@ -306,15 +279,30 @@ export default function App() {
     return await ctx.decodeAudioData(ab);
   }
 
+  // ★ cara優先のローダ（パターンA）
   async function loadVoiceBuffer(name: "pre" | "shutter" | "post"): Promise<AudioBuffer | null> {
-    const key = `${ip || "builtin"}/${name}`;
+    const key = `${ip || "builtin"}/${cara || "default"}/${name}`;
     const cached = voiceBufCache.current.get(key);
     if (cached) return cached;
 
     let blob: Blob | undefined;
 
-    // packs（IDB→ネット）
-    if (ip) {
+    // 1) cara スコープ（最優先）
+    if (ip && cara) {
+      const idbKey = `voice/${ip}/${cara}/${name}`;
+      blob = await idbGetBlob(idbKey);
+      if (!blob) {
+        blob = await fetchFirstBlob([
+          `/packs/${ip}/characters/${cara}/voice/${name}.mp3`,
+          `/packs/${ip}/characters/${cara}/voice/${name}.ogg`,
+          `/packs/${ip}/characters/${cara}/voice/${name}.wav`,
+        ]);
+        if (blob) { try { await idbPutBlob(idbKey, blob); } catch {} }
+      }
+    }
+
+    // 2) ip スコープ（フォールバック）
+    if (!blob && ip) {
       const idbKey = `voice/${ip}/${name}`;
       blob = await idbGetBlob(idbKey);
       if (!blob) {
@@ -323,21 +311,16 @@ export default function App() {
           `/packs/${ip}/voice/${name}.ogg`,
           `/packs/${ip}/voice/${name}.wav`,
         ]);
-        if (blob) {
-          try { await idbPutBlob(idbKey, blob); } catch {}
-        }
+        if (blob) { try { await idbPutBlob(idbKey, blob); } catch {} }
       }
     }
 
-    // 内蔵
+    // 3) 内蔵（最終フォールバック）
     if (!blob) {
       const re = name === "pre" ? /pre/i : name === "post" ? /post|after|yay/i : /shutter|shot|camera/i;
       const url = Object.values(builtinVoices).find((u) => re.test(u));
       if (url) {
-        try {
-          const r = await fetch(url);
-          if (r.ok) blob = await r.blob();
-        } catch {}
+        try { const r = await fetch(url); if (r.ok) blob = await r.blob(); } catch {}
       }
     }
     if (!blob) return null;
@@ -347,9 +330,7 @@ export default function App() {
       const buf = await decodeToBuffer(ctx, await blob.arrayBuffer());
       voiceBufCache.current.set(key, buf);
       return buf;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   function playBufferAndWait(buf: AudioBuffer): Promise<void> {
@@ -380,23 +361,41 @@ export default function App() {
   const playBeepAndWait = async () =>
     new Promise<void>((resolve) => { playBeep().finally(() => setTimeout(resolve, 210)); });
 
-  // 撮影
+  // ---- 撮影 ---------------------------------------------------------------
   const [shots, setShots] = useState<{ url: string; ts: number }[]>([]);
   const [countdown, setCountdown] = useState(0);
 
+  // ★ cara優先のフレーム解決（パターンA）
   const getOverlayURL = async (frame: FrameKind, asp: Aspect): Promise<string | null> => {
     const keyBase = `${frame}_${asp.replace(":", "x")}`;
-    if (!ip) {
-      return Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === keyBase)?.[1] ?? null;
+
+    // 1) cara スコープ（最優先）
+    if (ip && cara) {
+      const k = `frame/${ip}/${cara}/${keyBase}`;
+      const cached = await idbGetBlob(k);
+      if (cached) return URL.createObjectURL(cached);
+
+      const net = await fetchFirstBlob([
+        `/packs/${ip}/characters/${cara}/frames/${keyBase}.png`,
+        `/packs/${ip}/characters/${cara}/frames/${keyBase}.webp`,
+      ]);
+      if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
     }
-    const k = `frame/${ip}/${keyBase}`;
-    const cached = await idbGetBlob(k);
-    if (cached) return URL.createObjectURL(cached);
-    const net = await fetchFirstBlob([`/packs/${ip}/frames/${keyBase}.png`, `/packs/${ip}/frames/${keyBase}.webp`]);
-    if (net) {
-      await idbPutBlob(k, net);
-      return URL.createObjectURL(net);
+
+    // 2) ip スコープ
+    if (ip) {
+      const k = `frame/${ip}/${keyBase}`;
+      const cached = await idbGetBlob(k);
+      if (cached) return URL.createObjectURL(cached);
+
+      const net = await fetchFirstBlob([
+        `/packs/${ip}/frames/${keyBase}.png`,
+        `/packs/${ip}/frames/${keyBase}.webp`,
+      ]);
+      if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
     }
+
+    // 3) 内蔵
     const builtin = Object.entries(builtinFramePNGs).find(([p]) => fileBase(p) === keyBase)?.[1] ?? null;
     return builtin;
   };
@@ -458,6 +457,7 @@ export default function App() {
         ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
       }
 
+      // キャラ
       if (charUrl && stageRef.current) {
         const stageW = stageSize.w, stageH = stageSize.h;
         const ratio = stageW && stageH ? w / stageW : 1;
@@ -474,6 +474,7 @@ export default function App() {
         ctx.restore();
       }
 
+      // フレーム
       const overlayUrl = await getOverlayURL(activeFrame, aspect);
       if (overlayUrl) {
         const img = await loadImage(overlayUrl);
@@ -501,10 +502,10 @@ export default function App() {
       if (!cancelled) setPreviewOverlay(u);
     })();
     return () => { cancelled = true; };
-  }, [ip, activeFrame, aspect]);
+  }, [ip, cara, activeFrame, aspect]);
   useEffect(() => () => { if (previewOverlay?.startsWith("blob:")) URL.revokeObjectURL(previewOverlay); }, [previewOverlay]);
 
-  // UI
+  // ---- UI -------------------------------------------------------------------
   const disabledCls = (extra = "") => (locked ? ` opacity-50 cursor-not-allowed ${extra}` : extra);
 
   return (
@@ -521,7 +522,7 @@ export default function App() {
           )}
 
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            {/* ▼ 追加: 過去に読み込んだキャラのプルダウン */}
+            {/* 過去に読み込んだキャラのプルダウン */}
             {authorized && permittedList.length > 0 && (
               <select
                 value={current ? `${current.ip}:${current.cara}` : ""}
@@ -591,7 +592,7 @@ export default function App() {
               セリフ/効果音{sfxOn ? "ON" : "OFF"}
             </button>
 
-            {/* 撮影するはロックしても有効 */}
+            {/* 撮影するはロック中も有効 */}
             <button disabled={shooting} onClick={doCapture}
               className={`rounded-2xl px-4 py-2 font-semibold shadow ${shooting ? "bg-slate-600 cursor-not-allowed" : "bg-emerald-500 hover:bg-emerald-400"}`}>
               {shooting ? "撮影中…" : "撮影する"}
@@ -679,7 +680,7 @@ export default function App() {
   );
 }
 
-/* -------- フレーム（プログラム描画） -------- */
+/* ======= フレーム（内蔵プログラム描画のフォールバック） ===================== */
 function ProgramFrameOverlay({ active }: { active: FrameKind }) {
   if (active === "sparkle") {
     return (
@@ -733,28 +734,40 @@ function drawProgramFrame(ctx: CanvasRenderingContext2D, active: FrameKind, w: n
   }
 }
 
-/* -------- ヘルパ -------- */
+/* ============================== ヘルパ ===================================== */
 function wait(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
 function dist(a: { x: number; y: number }, b: { x: number; y: number }) { return Math.hypot(a.x - b.x, a.y - b.y); }
 function angle(a: { x: number; y: number }, b: { x: number; y: number }) { return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI; }
 function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 function fileBase(path: string) { return path.split("/").pop()!.replace(/\.[^.]+$/, ""); }
+
 async function loadImage(url: string) {
   return await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image(); img.onload = () => resolve(img); img.onerror = reject; img.src = url;
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
   });
 }
+
 async function fetchFirstBlob(urls: string[]): Promise<Blob | undefined> {
   for (const url of urls) {
-    try { const res = await fetch(url, { cache: "no-store" }); if (res.ok) return await res.blob(); } catch {}
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.ok) return await res.blob();
+    } catch {}
   }
   return undefined;
 }
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open("oshi-assets", 1);
-    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains("files")) db.createObjectStore("files"); };
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -779,7 +792,7 @@ async function idbPutBlob(key: string, blob: Blob): Promise<void> {
       const st = tx.objectStore("files");
       const r = st.put(blob, key);
       r.onsuccess = () => resolve();
-      r.onerror  = () => resolve();
+      r.onerror = () => resolve();
     });
   } catch {}
 }
