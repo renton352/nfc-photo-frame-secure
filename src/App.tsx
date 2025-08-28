@@ -6,14 +6,15 @@ import { motion } from "framer-motion";
  * - claim.html で保存した {ip, cara} を localStorage から復元
  * - 未通過端末は UI をロック（「撮影する」は有効のまま）
  * - セリフ/シャッター音/フレームの探索順：
- *   1) cara（キャラ）  /packs/{ip}/characters/{cara}/voice|frames/...
- *   1.5) 共有（characters直下）/packs/{ip}/characters/voice|frames/...
- *   2) ip               /packs/{ip}/voice|frames/...
- *   3) 内蔵             ./assets/...
+ *   1) cara  (/packs/{ip}/characters/{cara}/voice|frames/...)
+ *   1.5) 共有 (/packs/{ip}/characters/voice|frames/...)
+ *   2) ip    (/packs/{ip}/voice|frames/...)
+ *   3) 内蔵  (./assets/...)
  *
- * 要件：post は “必ず鳴る”
- *   - クリック直後に <audio> を無音で一瞬再生→pause して「解錠」
- *   - 同じ <audio> で post を再生（ダメなら別候補、最後はビープ）
+ * 重要：post は “必ず鳴る”
+ *  - クリック直後に <audio> を無音で一瞬再生→pause でオートプレイ解錠（prime）
+ *  - さらに <audio> を MediaElementAudioSourceNode で WebAudio 出力へブリッジ
+ *  - これによりサイレント/イヤホン環境でも pre/shutter と同経路で確実に出力
  */
 
 type Aspect = "3:4" | "1:1" | "16:9";
@@ -93,7 +94,7 @@ export default function App() {
   const urlCd = Number(params.get("cd") ?? 3);
   const urlGuide = params.get("guide") === "1";
 
-  // ---- キャラ画像 -----------------------------------------------------------
+  // ---- キャラ画像（/packs/{ip}/characters/{cara}.png 等） -------------------
   const [charUrl, setCharUrl] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -238,7 +239,7 @@ export default function App() {
   };
   const resetChar = () => { setCx(0); setCy(0); setScale(1); setRot(0); };
 
-  // ---- 音声（pre/shutter は WebAudio、post は 固定の <audio> 要素） --------
+  // ---- 音声（pre/shutter は WebAudio、post は <audio>→WebAudio ブリッジ） ---
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ensureAudioCtx = () => {
     const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -369,9 +370,10 @@ export default function App() {
   const playBeepAndWait = async () =>
     new Promise<void>((resolve) => { playBeep().finally(() => setTimeout(resolve, 210)); });
 
-  // === 固定の <audio> 要素と「解錠」ロジック ================================
+  // === post 用 固定 <audio> と「解錠」＋ WebAudio ブリッジ ===================
   const postElRef = useRef<HTMLAudioElement | null>(null);
-  const primedSrcRef = useRef<string | null>(null); // 解錠に成功したURLを保持
+  const postSrcNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const primedSrcRef = useRef<string | null>(null); // 解錠で成功したURL
 
   // 候補URL（優先順：cara → 共有 → ip → 内蔵）
   function buildVoiceUrlCandidates(name: "pre" | "shutter" | "post"): string[] {
@@ -399,60 +401,86 @@ export default function App() {
     return list;
   }
 
-  // 撮影ボタン直後に呼ぶ：<audio> を無音で一瞬再生→pause（オートプレイ解錠）
+  // 撮影ボタン直後：<audio> を無音で一瞬再生→pause（オートプレイ解錠）
   async function primePostAudio(candidates: string[]) {
     const el = postElRef.current;
     if (!el) return;
+
     el.playsInline = true as any;
+    el.crossOrigin = "anonymous";
+    el.loop = false;
+    el.muted = true;   // 解錠は無音で
     el.volume = 1;
-    el.muted = true; // 無音で解錠
+
     for (const u of candidates) {
       try {
-        el.src = u + (u.startsWith("/packs/") ? `?v=1` : ""); // SWに邪魔されないよう軽いクエリ付
+        el.src = u + (u.startsWith("/packs/") ? `?v=1` : "");
         el.currentTime = 0;
         el.load();
-        await el.play(); // ここが重要：ユーザー操作直後に実行
+        await el.play();    // ここがユーザー操作直後
         el.pause();
         el.currentTime = 0;
-        primedSrcRef.current = el.src; // 成功したURLを保持
+        primedSrcRef.current = el.src;
         break;
       } catch {
-        // 次の候補へ
+        // 次候補へ
       }
     }
-    el.muted = false;
   }
 
-  // 実際に post を再生（解錠済みの同じ要素で）
+  // 実際に post を再生（<audio> でデコード、出力は WebAudio へ）
   async function playPostNow(): Promise<boolean> {
     const el = postElRef.current;
     if (!el) return false;
 
-    // 解錠が未成功なら候補でセット
+    const ctx = ensureAudioCtx();
+    try { await ctx.resume(); } catch {}
+
+    // 初回だけブリッジノードを作る（以後は使い回し）
+    if (!postSrcNodeRef.current) {
+      try {
+        postSrcNodeRef.current = ctx.createMediaElementSource(el);
+        postSrcNodeRef.current.connect(ctx.destination);
+      } catch (e) {
+        // createMediaElementSource は1回しか作れない制約や CORS で失敗することがある
+        console.warn("createMediaElementSource failed", e);
+      }
+    }
+
+    // <audio> 自体の出力は常にミュート（実音は WebAudio 側から出す）
+    el.muted = true;
+    el.playsInline = true as any;
+    el.crossOrigin = "anonymous";
+    el.loop = false;
+
+    // 解錠が未成功なら候補から src セット
     if (!primedSrcRef.current) {
       const cands = buildVoiceUrlCandidates("post");
       for (const u of cands) {
         try {
           el.src = u + (u.startsWith("/packs/") ? `?v=1` : "");
-          el.currentTime = 0; el.load();
+          el.currentTime = 0;
+          el.load();
           break;
         } catch {}
       }
     } else {
       el.src = primedSrcRef.current;
-      el.currentTime = 0; el.load();
+      el.currentTime = 0;
+      el.load();
     }
 
     try {
-      await el.play();
-      // 再生完了待ち
+      await el.play(); // デコードは <audio>
+      // 再生完了を待機（最大6秒）
       await new Promise<void>((resolve, reject) => {
         const to = setTimeout(() => reject(new Error("timeout")), 6000);
         el.onended = () => { clearTimeout(to); resolve(); };
         el.onerror = () => { clearTimeout(to); reject(new Error("error")); };
       });
       return true;
-    } catch {
+    } catch (e) {
+      console.warn("post play failed", e);
       return false;
     } finally {
       el.onended = null;
@@ -477,7 +505,7 @@ export default function App() {
         `/packs/${ip}/characters/${cara}/frames/${keyBase}.png`,
         `/packs/${ip}/characters/${cara}/frames/${keyBase}.webp`,
       ]);
-      if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
+        if (net) { await idbPutBlob(k, net); return URL.createObjectURL(net); }
     }
 
     // 1.5) 共有
@@ -513,7 +541,7 @@ export default function App() {
     if (shooting) return;
     setShooting(true);
     try {
-      // ====== ここで post の <audio> を“解錠”しておく（ユーザー操作直後！） ======
+      // ====== クリック直後に post の <audio> を“解錠” ======
       const postCandidates = buildVoiceUrlCandidates("post");
       await primePostAudio(postCandidates);
 
@@ -603,7 +631,7 @@ export default function App() {
       // ===== シャッター終了待ち =====
       await shutterPromise;
 
-      // ===== 後口上（post：解錠済みの <audio> で必ず鳴らす） =====
+      // ===== 後口上（post：ブリッジ経由で確実に） =====
       if (sfxOn) {
         await wait(80); // 端末安定化
         const ok = await playPostNow();
@@ -776,8 +804,8 @@ export default function App() {
             )}
           </div>
 
-          {/* ★post 再生用の固定 <audio>（画面には見えません） */}
-          <audio ref={postElRef} preload="auto" className="hidden" playsInline />
+          {/* ★post 再生用の固定 <audio>（画面には見えません）。CORS必須 */}
+          <audio ref={postElRef} preload="auto" className="hidden" playsInline crossOrigin="anonymous" />
 
           <canvas ref={canvasRef} className="hidden" />
 
